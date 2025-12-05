@@ -290,8 +290,12 @@ def generate_images(tasks, output_dir="./generated-images"):
             fail_count += 1
             continue
 
+        # 获取图像尺寸
+        size = task.get("size", "2048x2048")
+
         print(f"\n[{idx}/{len(tasks)}] 正在生成: {name}")
         print(f"使用风格: {actual_style}")
+        print(f"图像尺寸: {size}")
         print(f"提示词: {prompt[:100]}..." if len(prompt) > 100 else f"提示词: {prompt}")
 
         try:
@@ -300,7 +304,7 @@ def generate_images(tasks, output_dir="./generated-images"):
                 # model="doubao-seedream-4-0-250828",
                 model="doubao-seedream-3-0-t2i-250415",
                 prompt=prompt,
-                size="2048x2048",  # 2K 分辨率，也可以使用 "1024x1024" (1K)
+                size=size,  # 从任务配置中读取尺寸
                 response_format="url",
                 extra_body={
                     "watermark": False,  # 设置为 False 移除水印
@@ -349,6 +353,7 @@ def generate_images(tasks, output_dir="./generated-images"):
                     "name": name,
                     "prompt": prompt,
                     "style": actual_style,
+                    "size": size,
                     "green_screen_removed": green_removed,
                     "pixels_removed": pixels_removed
                 })

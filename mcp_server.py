@@ -2,6 +2,7 @@
 import sys
 import os
 import time
+import json
 from mcp.server.fastmcp import FastMCP
 
 # 显式添加当前目录到 sys.path，确保能正确导入 main.py
@@ -21,113 +22,148 @@ except ImportError as e:
 mcp = FastMCP("DoubaoAssetGenerator")
 
 @mcp.tool()
-def generate_game_asset(description: str, workspace_dir: str, category: str = "none", style: str = "cartoon", name: str = None) -> str:
+def generate_game_asset(workspace_dir: str) -> str:
     """
-    根据描述生成游戏素材图像，自动移除绿幕背景。
+    从 tasks.json 读取任务列表并批量生成游戏素材图像，自动移除绿幕背景。
 
     此工具会自动完成：
-    1. 生成图像 (保存到 workspace_dir/public/assets/)
-    2. 移除绿幕背景（除 background 和 illustration 外，其他分类会强制生成绿幕并自动抠图）
+    1. 读取 workspace_dir/public/tasks.json 文件获取任务列表
+    2. 为每个任务生成图像 (保存到 workspace_dir/public/assets/)
+    3. 移除绿幕背景（除 background 和 illustration 外，其他分类会强制生成绿幕并自动抠图）
+    4. 生成完成后清空 tasks.json 文件
 
     Args:
-        description: 图像的详细描述 (例如: "一个手持火焰剑的红发女战士")
         workspace_dir: Qwen Code 的工作目录路径 (例如: "/home/user/phaser-frame-lite")
-        category: 素材分类，影响系统提示词。可选值:
-            "char_portrait"(角色立绘), "char_sprite"(角色小人), "ui_asset"(UI组件),
-            "sheet_effect"(序列帧特效), "illustration"(插画/CG), "logo"(标志/标题),
-            "prop"(道具/物品), "background"(背景/底图), "none"(无)
-        style: 美术风格。可选值: "pixel"(像素风), "cartoon"(卡通风), "realistic"(写实风)
-        name: (可选) 保存的文件名，不含后缀。如果不填，会自动生成一个基于时间的名字。
+
+    tasks.json 格式:
+    [
+      {
+        "description": "图像描述",
+        "category": "char_portrait|char_sprite|ui_asset|sheet_effect|illustration|logo|prop|background|none",
+        "style": "pixel|cartoon|realistic",
+        "name": "文件名（不含后缀）",
+        "size": "1024x1024|2048x2048"
+      }
+    ]
     """
-    
-    # 1. 如果没提供名字，生成一个临时名字
-    if not name:
-        # 清理描述中的特殊字符作为文件名的一部分，或者直接用时间戳
-        safe_desc = "".join([c for c in description if c.isalnum()])[:10]
-        name = f"auto_{safe_desc}_{int(time.time())}"
-    
-    # 2. 判断是否需要绿幕（只有 background 和 illustration 不需要绿幕）
-    no_green_screen_categories = ["background", "illustration"]
-    is_background = category in no_green_screen_categories
 
-    # 3. 构造任务对象 (完全复用 main.py 的逻辑)
-    # main.py 的 generate_images 函数接受一个 task 列表
-    # 我们这里构造一个只包含单条任务的列表
-    task = {
-        "name": name,
-        "description": description,
-        "category": category,
-        "style": style,
-        "need_green_screen": not is_background  # 背景图不需要绿幕，其他素材强制绿幕
-    }
-
-    # 3. 调用主程序逻辑
     try:
-        print(f"MCP 接收到任务: {name} - {description}")
+        print(f"MCP 工具启动")
         print(f"工作目录: {workspace_dir}")
 
-        # 基于工作目录设置输出路径
+        # 1. 读取 tasks.json 文件
+        tasks_json_path = os.path.join(workspace_dir, "public", "tasks.json")
+
+        if not os.path.exists(tasks_json_path):
+            return f"❌ 任务文件不存在: {tasks_json_path}"
+
+        with open(tasks_json_path, "r", encoding="utf-8") as f:
+            tasks_data = json.load(f)
+
+        if not tasks_data or not isinstance(tasks_data, list):
+            return f"❌ 任务文件格式错误，应该是一个数组"
+
+        # 过滤掉空任务
+        valid_tasks = [t for t in tasks_data if t.get("description") and t.get("description").strip()]
+
+        if not valid_tasks:
+            return f"ℹ️ 没有有效的任务需要执行（description 为空）"
+
+        print(f"📋 读取到 {len(valid_tasks)} 个有效任务")
+
+        # 2. 基于工作目录设置输出路径
         assets_dir = os.path.join(workspace_dir, "public", "assets")
         assets_dir = os.path.abspath(assets_dir)
-
-        # 确保目录存在
         os.makedirs(assets_dir, exist_ok=True)
 
-        # 调用主程序生成图像
-        result = engine.generate_images([task], output_dir=assets_dir)
+        # 3. 转换为 main.py 需要的格式
+        engine_tasks = []
+        for idx, task_data in enumerate(valid_tasks, 1):
+            description = task_data.get("description", "").strip()
+            category = task_data.get("category", "none").strip() or "none"
+            style = task_data.get("style", "cartoon").strip() or "cartoon"
+            name = task_data.get("name", "").strip()
+            size = task_data.get("size", "2048x2048").strip() or "2048x2048"
 
-        # 生成完成后，清空 workspace_dir/public/tasks.json 文件
+            # 如果没有提供名字，自动生成
+            if not name:
+                safe_desc = "".join([c for c in description if c.isalnum()])[:10]
+                name = f"auto_{safe_desc}_{int(time.time())}_{idx}"
+
+            # 判断是否需要绿幕
+            no_green_screen_categories = ["background", "illustration"]
+            is_background = category in no_green_screen_categories
+
+            engine_tasks.append({
+                "name": name,
+                "description": description,
+                "category": category,
+                "style": style,
+                "size": size,
+                "need_green_screen": not is_background
+            })
+
+            print(f"  [{idx}] {name} - {category}/{style} - {description[:50]}...")
+
+        # 4. 调用主程序生成图像
+        result = engine.generate_images(engine_tasks, output_dir=assets_dir)
+
+        # 5. 生成完成后，重置 tasks.json 文件为空模板
         try:
-            task_json_path = os.path.join(workspace_dir, "public", "tasks.json")
-            # 如果文件存在，清空内容；如果不存在，创建空文件
-            with open(task_json_path, "w", encoding="utf-8") as f:
-                f.write("")
-            print(f"✅ 已清空任务文件: {task_json_path}")
+            # 保留一个空模板项，让用户知道要填入哪些信息
+            template = [
+                {
+                    "description": "",
+                    "category": "",
+                    "style": "",
+                    "name": "",
+                    "size": ""
+                }
+            ]
+            with open(tasks_json_path, "w", encoding="utf-8") as f:
+                json.dump(template, f, ensure_ascii=False, indent=2)
+            print(f"✅ 已重置任务文件为空模板: {tasks_json_path}")
         except Exception as clear_error:
-            print(f"⚠️ 清空任务文件失败: {clear_error}")
-            # 不影响主流程，继续执行
+            print(f"⚠️ 重置任务文件失败: {clear_error}")
 
-        # 构建详细的返回消息
-        if result["success"]:
-            # 获取生成的图像信息
-            img_info = result["images"][0] if result["images"] else {}
+        # 6. 构建详细的返回消息
+        message = f"{'='*60}\n"
+        message += f"📊 批量生成完成！\n"
+        message += f"{'='*60}\n\n"
+        message += f"✅ 成功: {result['success_count']} 个\n"
+        message += f"❌ 失败: {result['fail_count']} 个\n"
+        message += f"📁 保存位置: {assets_dir}/\n"
 
-            message = f"✅ 图像生成成功！\n\n"
-            message += f"文件名: {name}.png\n"
-            message += f"风格: {style}\n"
-            message += f"分类: {category}\n"
-            message += f"保存位置: {os.path.join(workspace_dir, 'public', 'assets', f'{name}.png')}\n"
+        # 添加错误详情
+        if result.get('errors'):
+            message += f"\n{'='*60}\n"
+            message += f"❌ 错误详情:\n"
+            message += f"{'='*60}\n"
+            for error in result['errors']:
+                message += f"  • {error.get('name', '未知')}: {error.get('error', '未知错误')}\n"
 
-            # 添加绿幕移除信息
-            if img_info.get('green_screen_removed'):
-                pixels = img_info.get('pixels_removed', 0)
-                message += f"\n🎨 绿幕已移除 (处理了 {pixels:,} 个像素)"
+        # 添加成功生成的图像列表
+        if result['success_count'] > 0:
+            message += f"\n{'='*60}\n"
+            message += f"✅ 已生成的素材:\n"
+            message += f"{'='*60}\n"
+            for img_info in result.get('images', []):
+                if img_info:
+                    message += f"  • {img_info.get('filename', '未知')}"
+                    message += f" [{img_info.get('size', 'N/A')}]"
+                    message += f" [{img_info.get('style', 'N/A')}]"
+                    if img_info.get('green_screen_removed') and img_info.get('pixels_removed', 0) > 0:
+                        message += f" (已抠图: {img_info.get('pixels_removed', 0):,} 像素)"
+                    message += "\n"
 
-            # 添加使用的完整提示词
-            if img_info.get('prompt'):
-                prompt = img_info['prompt']
-                # 截断过长的提示词
-                if len(prompt) > 150:
-                    prompt_display = prompt[:150] + "..."
-                else:
-                    prompt_display = prompt
-                message += f"\n\n📝 使用的提示词:\n{prompt_display}"
+        message += f"\n{'='*60}\n"
+        message += f"💡 任务文件已重置为空模板，可以继续添加新任务\n"
+        message += f"{'='*60}"
 
-            return message
-        else:
-            # 生成失败时，返回详细的错误信息
-            message = f"❌ 生成失败\n\n"
-            message += f"成功: {result['success_count']}\n"
-            message += f"失败: {result['fail_count']}\n"
+        return message
 
-            # 添加错误详情
-            if result.get('errors'):
-                message += f"\n错误详情:\n"
-                for error in result['errors']:
-                    message += f"- {error.get('name', '未知')}: {error.get('error', '未知错误')}\n"
-
-            return message
-
+    except json.JSONDecodeError as e:
+        return f"❌ 任务文件 JSON 格式错误:\n{str(e)}"
     except Exception as e:
         # 捕获详细的错误信息
         import traceback
