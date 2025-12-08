@@ -42,7 +42,7 @@ def generate_game_asset(workspace_dir: str) -> str:
         "category": "char_portrait|char_sprite|ui_asset|sheet_effect|illustration|logo|prop|background|none",
         "style": "pixel|cartoon|realistic",
         "name": "文件名（不含后缀）",
-        "size": "1024x1024|2048x2048"
+        "size": "numxnum (例如 1024x512)"
       }
     ]
     """

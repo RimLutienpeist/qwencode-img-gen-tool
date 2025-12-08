@@ -1,6 +1,5 @@
 """
-豆包图像生成 API - 简化版本
-直接使用 task 数组定义要生成的图像
+游戏素材图像生成工具
 """
 
 import os
@@ -15,7 +14,7 @@ from PIL import Image as PILImage
 load_dotenv()  # 从 .env 加载到环境变量
 
 
-# 初始化豆包客户端
+# 初始化 OpenAI 客户端
 client = OpenAI(
     base_url="https://ark.cn-beijing.volces.com/api/v3",
     api_key=os.environ.get("ARK_API_KEY"),
@@ -141,6 +140,135 @@ def load_tasks(config_file="tasks.json"):
         print(f"❌ 错误: 无法读取配置文件")
         print(f"   {e}")
         return []
+
+
+# ==================== 智能尺寸计算函数 ====================
+
+def calculate_api_size(target_size):
+    """
+    根据目标尺寸计算最佳的 API 调用尺寸
+
+    规则：
+    - 如果目标尺寸在 512x512 - 2048x2048 范围内，直接使用
+    - 如果小于 512x512，放大到范围内（倍乘）
+    - 如果大于 2048x2048，缩小到范围内（倍除）
+
+    Args:
+        target_size: 目标尺寸字符串，格式 "宽x高" (例如: "256x256")
+
+    Returns:
+        tuple: (api_size字符串, scale_factor浮点数, need_resize布尔值)
+        - api_size: 用于 API 调用的尺寸字符串
+        - scale_factor: 缩放因子（API尺寸/目标尺寸）
+        - need_resize: 是否需要生成后缩放
+    """
+    try:
+        # 解析目标尺寸
+        if 'x' not in target_size.lower():
+            return "1024x1024", 1.0, False
+
+        width, height = map(int, target_size.lower().split('x'))
+
+        # API 支持的尺寸范围
+        MIN_SIZE = 512
+        MAX_SIZE = 2048
+
+        # 判断是否在支持范围内
+        if MIN_SIZE <= width <= MAX_SIZE and MIN_SIZE <= height <= MAX_SIZE:
+            # 在范围内，直接使用
+            return target_size, 1.0, False
+
+        # 计算缩放因子
+        # 如果任一维度小于最小值，需要放大
+        if width < MIN_SIZE or height < MIN_SIZE:
+            # 计算需要放大的倍数（向上取整到 2 的幂次）
+            scale_w = MIN_SIZE / width if width < MIN_SIZE else 1
+            scale_h = MIN_SIZE / height if height < MIN_SIZE else 1
+            scale_factor = max(scale_w, scale_h)
+
+            # 向上取整到最接近的 2 的幂次（2, 4, 8...）
+            import math
+            scale_factor = 2 ** math.ceil(math.log2(scale_factor))
+
+        # 如果任一维度大于最大值，需要缩小
+        elif width > MAX_SIZE or height > MAX_SIZE:
+            # 计算需要缩小的倍数（向上取整到 2 的幂次）
+            scale_w = width / MAX_SIZE if width > MAX_SIZE else 1
+            scale_h = height / MAX_SIZE if height > MAX_SIZE else 1
+            scale_factor = max(scale_w, scale_h)
+
+            # 向上取整到最接近的 2 的幂次
+            import math
+            scale_factor = 2 ** math.ceil(math.log2(scale_factor))
+
+            # 缩小时 scale_factor 应该是 < 1 的（例如 0.5, 0.25）
+            scale_factor = 1.0 / scale_factor
+        else:
+            scale_factor = 1.0
+
+        # 计算 API 尺寸
+        api_width = int(width * scale_factor)
+        api_height = int(height * scale_factor)
+
+        # 确保 API 尺寸在范围内
+        api_width = max(MIN_SIZE, min(MAX_SIZE, api_width))
+        api_height = max(MIN_SIZE, min(MAX_SIZE, api_height))
+
+        api_size = f"{api_width}x{api_height}"
+        need_resize = (api_width != width or api_height != height)
+
+        return api_size, scale_factor, need_resize
+
+    except Exception as e:
+        print(f"⚠️ 尺寸计算失败: {e}")
+        return "1024x1024", 1.0, False
+
+
+# ==================== 图像缩放函数 ====================
+
+def resize_image(filepath, target_size, name):
+    """
+    缩放图像到目标尺寸
+
+    使用高质量的 LANCZOS 重采样算法，支持放大和缩小
+
+    Args:
+        filepath: 图像文件路径
+        target_size: 目标尺寸，格式为 "宽x高" (例如: "2048x2048")
+        name: 素材名称
+
+    Returns:
+        tuple: (是否成功, 原始尺寸, 目标尺寸)
+    """
+    try:
+        # 解析目标尺寸
+        if 'x' not in target_size.lower():
+            return False, None, None
+
+        width, height = map(int, target_size.lower().split('x'))
+
+        # 打开图像
+        img = PILImage.open(filepath)
+        original_size = img.size
+
+        # 如果尺寸已经匹配，跳过缩放
+        if img.size == (width, height):
+            return True, original_size, (width, height)
+
+        # 使用高质量的重采样算法
+        # LANCZOS 适合缩小，对放大也有不错的效果
+        resized_img = img.resize((width, height), PILImage.Resampling.LANCZOS)
+
+        # 保存缩放后的图像
+        resized_img.save(filepath, 'PNG')
+
+        return True, original_size, (width, height)
+
+    except Exception as e:
+        print(f"         ⚠️  图像缩放失败: {e}")
+        import traceback
+        traceback.print_exc()
+        return False, None, None
 
 
 # ==================== 背景移除函数 ====================
@@ -290,21 +418,29 @@ def generate_images(tasks, output_dir="./generated-images"):
             fail_count += 1
             continue
 
-        # 获取图像尺寸
-        size = task.get("size", "2048x2048")
+        # 获取目标图像尺寸
+        target_size = task.get("size", "1024x1024")
+
+        # 计算最佳 API 尺寸
+        api_size, scale_factor, need_resize = calculate_api_size(target_size)
 
         print(f"\n[{idx}/{len(tasks)}] 正在生成: {name}")
         print(f"使用风格: {actual_style}")
-        print(f"图像尺寸: {size}")
+        print(f"目标尺寸: {target_size}")
+        print(f"API 生成尺寸: {api_size}")
+        if need_resize:
+            print(f"缩放策略: {api_size} → {target_size} (缩放因子: {scale_factor:.2f}x)")
+        else:
+            print(f"缩放策略: 直接使用目标尺寸，无需后处理")
         print(f"提示词: {prompt[:100]}..." if len(prompt) > 100 else f"提示词: {prompt}")
 
         try:
-            # 调用豆包图像生成 API
+            # 调用豆包图像生成 API（使用智能计算的尺寸）
             imagesResponse = client.images.generate(
                 # model="doubao-seedream-4-0-250828",
                 model="doubao-seedream-3-0-t2i-250415",
                 prompt=prompt,
-                size=size,  # 从任务配置中读取尺寸
+                size=api_size,  # 使用智能计算的 API 尺寸
                 response_format="url",
                 extra_body={
                     "watermark": False,  # 设置为 False 移除水印
@@ -347,15 +483,39 @@ def generate_images(tasks, output_dir="./generated-images"):
                         # green_removed == False 说明跳过了（background 或 illustration）
                         print(f"⏭️  跳过抠图（背景/插画类素材）")
 
+                # 缩放图像到目标尺寸（如需要）
+                resized = False
+                original_size = None
+                final_size = None
+                if need_resize:
+                    print(f"🔄 缩放图像: {api_size} → {target_size}...")
+                    resized, original_size, final_size = resize_image(filename, target_size, name)
+                    if resized:
+                        print(f"✅ 图像已缩放: {original_size} → {final_size}")
+                    else:
+                        print(f"⚠️  图像缩放失败")
+                else:
+                    print(f"ℹ️  尺寸已匹配，跳过缩放")
+                    resized = True
+                    # 解析 API 尺寸作为原始尺寸
+                    api_w, api_h = map(int, api_size.lower().split('x'))
+                    original_size = (api_w, api_h)
+                    final_size = (api_w, api_h)
+
                 # 记录图像信息（仅用于返回值）
                 images_info.append({
                     "filename": f"{name}.png",
                     "name": name,
                     "prompt": prompt,
                     "style": actual_style,
-                    "size": size,
+                    "target_size": target_size,
+                    "api_size": api_size,
+                    "scale_factor": scale_factor,
                     "green_screen_removed": green_removed,
-                    "pixels_removed": pixels_removed
+                    "pixels_removed": pixels_removed,
+                    "resized": need_resize,
+                    "original_size": f"{original_size[0]}x{original_size[1]}" if original_size else None,
+                    "final_size": f"{final_size[0]}x{final_size[1]}" if final_size else None
                 })
 
                 success_count += 1
