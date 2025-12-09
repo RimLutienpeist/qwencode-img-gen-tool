@@ -10,6 +10,7 @@ import requests
 import time
 import numpy as np
 from PIL import Image as PILImage
+import cv2
 
 load_dotenv()  # 从 .env 加载到环境变量
 
@@ -26,15 +27,19 @@ client = OpenAI(
 # 美术风格选择
 ART_STYLE = "cartoon"  # pixel / cartoon / realistic
 
-# 是否自动移除绿幕背景
-AUTO_REMOVE_GREEN_SCREEN = True  # True=自动移除 / False=保持原样
+# 是否自动移除背景
+AUTO_REMOVE_BACKGROUND = True  # True=自动移除 / False=保持原样
 
-# 绿幕移除选项
-GREEN_SCREEN_CONFIG = {
+# 背景移除选项
+BACKGROUND_REMOVAL_CONFIG = {
     "skip_backgrounds": True,  # 是否跳过背景/插画类素材（background, illustration）
     "overwrite": True,  # 是否覆盖原文件（False则创建 _nobg 副本）
-    "tolerance": 40,  # 绿色容差（0-100，数值越大移除范围越广）
-    "threshold": 100,  # 绿色阈值（0-255，用于判断是否为绿色）
+    "tolerance": 10,  # 颜色容差（0-100，数值越大移除范围越广）
+    "threshold": 245,  # 白色阈值（0-255，用于判断是否为白色，建议 200-240）
+    "algorithm": "grabcut",  # 算法选择: "simple" 或 "grabcut"
+    "grabcut_iterations": 10,  # GrabCut 迭代次数（1-10，数值越大效果越好但越慢）
+    "edge_feather": 1,  # 边缘羽化半径（像素，0 表示不羽化）
+    "remove_color_spill": True,  # 是否移除颜色溢出（边缘色彩校正）
 }
 
 # ==================== 系统提示词 ====================
@@ -49,7 +54,7 @@ SYSTEM_PROMPTS = {
     "cartoon": "漫画风格，卡通渲染，cel-shading，明快色彩，游戏素材",
     "realistic": "写实风格，3D渲染，高细节，真实质感，游戏素材",
 
-    # 分类提示词（不含绿幕，绿幕会根据need_green_screen动态添加）
+    # 分类提示词（不含白色背景，白色背景会根据need_white_background动态添加）
     "char_portrait": "角色立绘，清晰轮廓，立绘设计，适合对话界面使用",
     "char_sprite": "角色小人，游戏精灵，清晰轮廓，适合游戏场景使用",
     "ui_asset": "UI组件，界面元素，清晰可辨识，扁平化设计",
@@ -59,12 +64,12 @@ SYSTEM_PROMPTS = {
     "prop": "道具物品，物品设计，清晰轮廓，适合游戏使用",
     "background": "背景设计，场景底图，层次分明",
 
-    # 绿幕背景提示词（会根据need_green_screen动态添加）
-    "green_screen": "纯绿色背景，绿幕背景，chroma key green background",
+    # 纯白背景提示词（会根据need_white_background动态添加）
+    "white_background": "纯白色背景，RGB(255,255,255)，白色底色，white background，clean white backdrop",
 }
 
 
-def build_prompt(description, category=None, style=None, need_green_screen=True):
+def build_prompt(description, category=None, style=None, need_white_background=True):
     """
     构建完整提示词
 
@@ -72,7 +77,7 @@ def build_prompt(description, category=None, style=None, need_green_screen=True)
         description: 具体描述（必填）
         category: 分类 (character/ui/scene/effect)，可选
         style: 风格 (pixel/cartoon/realistic)，可选，默认使用 ART_STYLE
-        need_green_screen: 是否需要绿幕背景，默认True
+        need_white_background: 是否需要纯白背景，默认True
 
     Returns:
         str: 完整的提示词
@@ -86,9 +91,9 @@ def build_prompt(description, category=None, style=None, need_green_screen=True)
         # 如果明确指定 "none"，则不添加分类提示词
         pass
 
-    # 强制添加绿幕背景（除非明确指定不需要）
-    if need_green_screen:
-        parts.append(SYSTEM_PROMPTS["green_screen"])
+    # 强制添加纯白背景（除非明确指定不需要）
+    if need_white_background:
+        parts.append(SYSTEM_PROMPTS["white_background"])
 
     # 添加风格提示词
     if style is None:
@@ -273,27 +278,27 @@ def resize_image(filepath, target_size, name):
 
 # ==================== 背景移除函数 ====================
 
-def remove_green_screen(filepath, name, skip_backgrounds=True, overwrite=True, tolerance=40, threshold=100, category=None):
+def remove_white_background_simple(filepath, name, skip_backgrounds=True, overwrite=True, tolerance=40, threshold=200, category=None):
     """
-    移除绿幕背景（Chroma Key）
+    移除白色背景（简单算法）
 
-    使用 HSV 色彩空间检测绿色并将其设为透明
+    使用简单的颜色阈值检测白色并将其设为透明（硬边缘）
 
     Args:
         filepath: 图像文件路径
         name: 素材名称
         skip_backgrounds: 是否跳过背景/插画素材
         overwrite: 是否覆盖原文件
-        tolerance: 绿色容差（0-100，数值越大移除范围越广）
-        threshold: 绿色阈值（0-255，用于判断G通道强度）
+        tolerance: 颜色容差（0-100，数值越大移除范围越广）
+        threshold: 白色阈值（0-255，用于判断亮度，建议 200-240）
         category: 素材分类（用于判断是否为 background 或 illustration）
 
     Returns:
         tuple: (是否成功, 处理的像素数)
     """
     # 检查是否为背景素材（只有 background 和 illustration 不需要抠图）
-    no_green_screen_categories = ["background", "illustration"]
-    is_background = category in no_green_screen_categories
+    no_background_removal_categories = ["background", "illustration"]
+    is_background = category in no_background_removal_categories
 
     if skip_backgrounds and is_background:
         return False, 0  # 跳过背景/插画素材
@@ -315,26 +320,31 @@ def remove_green_screen(filepath, name, skip_backgrounds=True, overwrite=True, t
         g = img_array[:, :, 1]
         b = img_array[:, :, 2]
 
-        # 绿幕检测逻辑：
-        # 1. G通道值要高（绿色强）
-        # 2. G通道明显高于R和B通道（绿色主导）
-        # 3. 整体亮度不能太低（避免黑色）
+        # 白色背景检测逻辑：
+        # 1. 所有通道值都要高（RGB 都接近 255）
+        # 2. RGB 三个通道的值相近（颜色接近灰度）
+        # 3. 整体亮度足够高
 
-        # 条件1: 绿色通道足够强
-        green_strong = g > threshold
-
-        # 条件2: 绿色明显高于红色和蓝色
-        green_dominant = (g > r + tolerance) & (g > b + tolerance)
-
-        # 条件3: 避免太暗的像素（黑色）
+        # 计算整体亮度
         brightness = (r + g + b) / 3
-        not_too_dark = brightness > 30
+
+        # 条件1: 亮度足够高（接近白色）
+        is_bright = brightness > threshold
+
+        # 条件2: RGB 通道值相近（接近灰度，避免彩色）
+        # 计算最大和最小通道的差异
+        max_channel = np.maximum(np.maximum(r, g), b)
+        min_channel = np.minimum(np.minimum(r, g), b)
+        color_diff = max_channel - min_channel
+
+        # 颜色差异要小（表示接近灰度/白色）
+        is_neutral = color_diff < tolerance
 
         # 组合所有条件
-        is_green = green_strong & green_dominant & not_too_dark
+        is_white = is_bright & is_neutral
 
-        # 将检测到的绿色像素设为透明
-        img_array[is_green, 3] = 0
+        # 将检测到的白色像素设为透明
+        img_array[is_white, 3] = 0
 
         # 转换回uint8
         img_array = np.clip(img_array, 0, 255).astype(np.uint8)
@@ -352,14 +362,228 @@ def remove_green_screen(filepath, name, skip_backgrounds=True, overwrite=True, t
             nobg_path = path_obj.parent / f"{path_obj.stem}_nobg{path_obj.suffix}"
             result_img.save(str(nobg_path), 'PNG')
 
-        pixels_removed = int(np.sum(is_green))
+        pixels_removed = int(np.sum(is_white))
         return True, pixels_removed
 
     except Exception as e:
-        print(f"         ⚠️  绿幕移除失败: {e}")
+        print(f"         ⚠️  背景移除失败: {e}")
         import traceback
         traceback.print_exc()
         return False, 0
+
+
+def remove_white_background_grabcut(filepath, name, skip_backgrounds=True, overwrite=True,
+                                    tolerance=40, threshold=200, category=None,
+                                    iterations=5, edge_feather=3, remove_spill=True):
+    """
+    移除白色背景（GrabCut 算法）
+
+    使用 OpenCV 的 GrabCut 图割算法进行智能抠图，支持边缘羽化和颜色溢出去除
+
+    Args:
+        filepath: 图像文件路径
+        name: 素材名称
+        skip_backgrounds: 是否跳过背景/插画素材
+        overwrite: 是否覆盖原文件
+        tolerance: 颜色容差（0-100，数值越大移除范围越广）
+        threshold: 白色阈值（0-255，用于判断亮度，建议 200-240）
+        category: 素材分类（用于判断是否为 background 或 illustration）
+        iterations: GrabCut 迭代次数（1-10，数值越大效果越好但越慢）
+        edge_feather: 边缘羽化半径（像素，0 表示不羽化）
+        remove_spill: 是否移除颜色溢出
+
+    Returns:
+        tuple: (是否成功, 处理的像素数)
+    """
+    # 检查是否为背景素材
+    no_background_removal_categories = ["background", "illustration"]
+    is_background = category in no_background_removal_categories
+
+    if skip_backgrounds and is_background:
+        return False, 0
+
+    try:
+        # 读取图像
+        img = cv2.imread(filepath)
+        if img is None:
+            raise ValueError(f"无法读取图像: {filepath}")
+
+        # 获取图像尺寸
+        height, width = img.shape[:2]
+
+        # ==================== 步骤 1: 颜色检测生成初步掩码 ====================
+
+        # 提取 RGB 通道（OpenCV 使用 BGR 格式）
+        b, g, r = cv2.split(img)
+
+        # 白色背景检测逻辑（与简单算法相同）
+        brightness = (r.astype(np.float32) + g.astype(np.float32) + b.astype(np.float32)) / 3
+        is_bright = brightness > threshold
+
+        # RGB 通道值相近（接近灰度/白色）
+        max_channel = np.maximum(np.maximum(r, g), b)
+        min_channel = np.minimum(np.minimum(r, g), b)
+        color_diff = max_channel - min_channel
+        is_neutral = color_diff < tolerance
+
+        is_white = is_bright & is_neutral
+
+        # 创建 GrabCut 掩码
+        # GrabCut 使用 4 个值：
+        # 0 = GC_BGD (明确背景)
+        # 1 = GC_FGD (明确前景)
+        # 2 = GC_PR_BGD (可能背景)
+        # 3 = GC_PR_FGD (可能前景)
+        mask = np.full((height, width), cv2.GC_PR_FGD, dtype=np.uint8)  # 默认为可能前景
+
+        # 明确的背景（白色区域）
+        mask[is_white] = cv2.GC_BGD
+
+        # 明确的前景（非白色且亮度较低的区域）
+        # 使用形态学操作找出明确的前景
+        is_definite_fg = ~is_white & (brightness < threshold - 50)
+
+        # 腐蚀操作找出核心前景区域
+        kernel = np.ones((5, 5), np.uint8)
+        is_definite_fg = cv2.erode(is_definite_fg.astype(np.uint8), kernel, iterations=1).astype(bool)
+        mask[is_definite_fg] = cv2.GC_FGD
+
+        # ==================== 步骤 2: GrabCut 迭代优化 ====================
+
+        # 初始化 GrabCut 模型
+        bgd_model = np.zeros((1, 65), np.float64)
+        fgd_model = np.zeros((1, 65), np.float64)
+
+        # 运行 GrabCut 算法
+        try:
+            cv2.grabCut(img, mask, None, bgd_model, fgd_model, iterations, cv2.GC_INIT_WITH_MASK)
+        except cv2.error as e:
+            print(f"         ⚠️  GrabCut 算法失败，回退到简单算法: {e}")
+            # 如果 GrabCut 失败，使用简单的颜色检测
+            pass
+
+        # 生成二值掩码（前景 = 1，背景 = 0）
+        # mask 的值：0,2 表示背景，1,3 表示前景
+        binary_mask = np.where((mask == cv2.GC_FGD) | (mask == cv2.GC_PR_FGD), 1, 0).astype(np.uint8)
+
+        # ==================== 步骤 3: 边缘羽化 ====================
+
+        alpha_mask = binary_mask.copy().astype(np.float32) * 255
+
+        if edge_feather > 0:
+            # 找出边缘区域
+            kernel = np.ones((3, 3), np.uint8)
+            dilated = cv2.dilate(binary_mask, kernel, iterations=edge_feather)
+            eroded = cv2.erode(binary_mask, kernel, iterations=edge_feather)
+            edge_region = dilated - eroded
+
+            # 计算距离变换（从边缘的距离）
+            dist_transform = cv2.distanceTransform(binary_mask, cv2.DIST_L2, 5)
+
+            # 在边缘区域应用距离变换生成渐变
+            # 归一化距离变换到 0-1 范围
+            if dist_transform.max() > 0:
+                dist_normalized = dist_transform / (edge_feather + 1)
+                dist_normalized = np.clip(dist_normalized, 0, 1)
+
+                # 在边缘区域应用渐变
+                alpha_mask = np.where(edge_region > 0,
+                                     dist_normalized * 255,
+                                     alpha_mask)
+
+            # 应用高斯模糊柔化边缘
+            alpha_mask = cv2.GaussianBlur(alpha_mask, (0, 0), sigmaX=edge_feather/2)
+
+        # 确保 alpha 值在 0-255 范围内
+        alpha_mask = np.clip(alpha_mask, 0, 255).astype(np.uint8)
+
+        # ==================== 步骤 4: 白色溢出去除（颜色校正）====================
+
+        if remove_spill:
+            # 找出边缘和半透明区域
+            semi_transparent = (alpha_mask > 10) & (alpha_mask < 245)
+
+            # 在这些区域增强饱和度（去除过度的灰白色）
+            img_float = img.astype(np.float32)
+
+            # 将 BGR 转换为 HSV 进行饱和度调整
+            img_hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV).astype(np.float32)
+
+            # 在半透明区域轻微增强饱和度（去除白色/灰色溢出）
+            saturation_boost = 1.2  # 增加 20% 饱和度
+            img_hsv[:, :, 1] = np.where(semi_transparent,
+                                       np.clip(img_hsv[:, :, 1] * saturation_boost, 0, 255),
+                                       img_hsv[:, :, 1])
+
+            # 转换回 BGR
+            img = cv2.cvtColor(img_hsv.astype(np.uint8), cv2.COLOR_HSV2BGR)
+
+        # ==================== 步骤 5: 生成最终图像 ====================
+
+        # 转换 BGR 为 RGB
+        img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+
+        # 添加 alpha 通道
+        img_rgba = np.dstack((img_rgb, alpha_mask))
+
+        # 转换为 PIL 图像
+        result_img = PILImage.fromarray(img_rgba, 'RGBA')
+
+        # 保存结果
+        if overwrite:
+            result_img.save(filepath, 'PNG')
+        else:
+            from pathlib import Path
+            path_obj = Path(filepath)
+            nobg_path = path_obj.parent / f"{path_obj.stem}_nobg{path_obj.suffix}"
+            result_img.save(str(nobg_path), 'PNG')
+
+        # 计算处理的像素数（透明像素）
+        pixels_removed = int(np.sum(alpha_mask < 128))
+        return True, pixels_removed
+
+    except Exception as e:
+        print(f"         ⚠️  GrabCut 背景移除失败: {e}")
+        import traceback
+        traceback.print_exc()
+        return False, 0
+
+
+def remove_background(filepath, name, skip_backgrounds=True, overwrite=True,
+                      tolerance=40, threshold=200, category=None,
+                      algorithm="grabcut", **kwargs):
+    """
+    移除背景（调度器）
+
+    根据配置选择使用简单算法或 GrabCut 算法
+
+    Args:
+        filepath: 图像文件路径
+        name: 素材名称
+        skip_backgrounds: 是否跳过背景/插画素材
+        overwrite: 是否覆盖原文件
+        tolerance: 颜色容差（0-100）
+        threshold: 白色阈值（0-255）
+        category: 素材分类
+        algorithm: 算法选择 ("simple" 或 "grabcut")
+        **kwargs: 额外参数（传递给具体算法）
+
+    Returns:
+        tuple: (是否成功, 处理的像素数)
+    """
+    if algorithm == "grabcut":
+        return remove_white_background_grabcut(
+            filepath, name, skip_backgrounds, overwrite,
+            tolerance, threshold, category,
+            iterations=kwargs.get('grabcut_iterations', 5),
+            edge_feather=kwargs.get('edge_feather', 3),
+            remove_spill=kwargs.get('remove_color_spill', True)
+        )
+    else:  # algorithm == "simple"
+        return remove_white_background_simple(
+            filepath, name, skip_backgrounds, overwrite,
+            tolerance, threshold, category
+        )
 
 
 # ==================== 主生成函数 ====================
@@ -378,7 +602,7 @@ def generate_images(tasks, output_dir="./generated-images"):
 
     print(f"开始生成 {len(tasks)} 张图像...")
     print(f"默认美术风格: {ART_STYLE}（可由任务参数覆盖）")
-    print(f"自动移除绿幕: {'✅ 开启' if AUTO_REMOVE_GREEN_SCREEN else '❌ 关闭'}")
+    print(f"自动移除背景: {'✅ 开启' if AUTO_REMOVE_BACKGROUND else '❌ 关闭'}")
     print(f"输出目录: {full_output_dir}")
     print("="*80)
 
@@ -402,7 +626,7 @@ def generate_images(tasks, output_dir="./generated-images"):
                 description=task["description"],
                 category=task.get("category"),
                 style=actual_style,
-                need_green_screen=task.get("need_green_screen", True)
+                need_white_background=task.get("need_white_background", True)
             )
         else:
             error_msg = f"缺少 prompt 或 description"
@@ -462,25 +686,30 @@ def generate_images(tasks, output_dir="./generated-images"):
                 print(f"✅ 成功保存: {filename}")
 
                 # 自动移除背景
-                green_removed = False
+                background_removed = False
                 pixels_removed = 0
-                if AUTO_REMOVE_GREEN_SCREEN:
-                    print(f"🔄 移除绿幕中...")
-                    green_removed, pixels_removed = remove_green_screen(
+                if AUTO_REMOVE_BACKGROUND:
+                    algorithm = BACKGROUND_REMOVAL_CONFIG.get("algorithm", "grabcut")
+                    print(f"🔄 移除背景中 (算法: {algorithm})...")
+                    background_removed, pixels_removed = remove_background(
                         filename,
                         name,
-                        GREEN_SCREEN_CONFIG["skip_backgrounds"],
-                        GREEN_SCREEN_CONFIG["overwrite"],
-                        GREEN_SCREEN_CONFIG["tolerance"],
-                        GREEN_SCREEN_CONFIG["threshold"],
-                        task.get("category")  # 传递 category 参数用于判断背景图
+                        BACKGROUND_REMOVAL_CONFIG["skip_backgrounds"],
+                        BACKGROUND_REMOVAL_CONFIG["overwrite"],
+                        BACKGROUND_REMOVAL_CONFIG["tolerance"],
+                        BACKGROUND_REMOVAL_CONFIG["threshold"],
+                        task.get("category"),  # 传递 category 参数用于判断背景图
+                        algorithm=algorithm,
+                        grabcut_iterations=BACKGROUND_REMOVAL_CONFIG.get("grabcut_iterations", 5),
+                        edge_feather=BACKGROUND_REMOVAL_CONFIG.get("edge_feather", 3),
+                        remove_color_spill=BACKGROUND_REMOVAL_CONFIG.get("remove_color_spill", True)
                     )
-                    if green_removed and pixels_removed > 0:
-                        print(f"✅ 绿幕已移除 (处理了 {pixels_removed:,} 个像素)")
-                    elif green_removed and pixels_removed == 0:
-                        print(f"ℹ️  未检测到绿幕")
+                    if background_removed and pixels_removed > 0:
+                        print(f"✅ 背景已移除 (处理了 {pixels_removed:,} 个像素)")
+                    elif background_removed and pixels_removed == 0:
+                        print(f"ℹ️  未检测到白色背景")
                     else:
-                        # green_removed == False 说明跳过了（background 或 illustration）
+                        # background_removed == False 说明跳过了（background 或 illustration）
                         print(f"⏭️  跳过抠图（背景/插画类素材）")
 
                 # 缩放图像到目标尺寸（如需要）
@@ -511,7 +740,7 @@ def generate_images(tasks, output_dir="./generated-images"):
                     "target_size": target_size,
                     "api_size": api_size,
                     "scale_factor": scale_factor,
-                    "green_screen_removed": green_removed,
+                    "background_removed": background_removed,
                     "pixels_removed": pixels_removed,
                     "resized": need_resize,
                     "original_size": f"{original_size[0]}x{original_size[1]}" if original_size else None,

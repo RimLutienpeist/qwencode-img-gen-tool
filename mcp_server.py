@@ -24,12 +24,12 @@ mcp = FastMCP("DoubaoAssetGenerator")
 @mcp.tool()
 def generate_game_asset(workspace_dir: str) -> str:
     """
-    从 tasks.json 读取任务列表并批量生成游戏素材图像，自动移除绿幕背景。
+    从 tasks.json 读取任务列表并批量生成游戏素材图像，自动移除白色背景。
 
     此工具会自动完成：
     1. 读取 workspace_dir/public/tasks.json 文件获取任务列表
     2. 为每个任务生成图像 (保存到 workspace_dir/public/assets/)
-    3. 移除绿幕背景（除 background 和 illustration 外，其他分类会强制生成绿幕并自动抠图）
+    3. 移除白色背景（除 background 和 illustration 外，其他分类会强制生成白色背景并自动抠图）
     4. 生成完成后清空 tasks.json 文件
 
     Args:
@@ -90,9 +90,9 @@ def generate_game_asset(workspace_dir: str) -> str:
                 safe_desc = "".join([c for c in description if c.isalnum()])[:10]
                 name = f"auto_{safe_desc}_{int(time.time())}_{idx}"
 
-            # 判断是否需要绿幕
-            no_green_screen_categories = ["background", "illustration"]
-            is_background = category in no_green_screen_categories
+            # 判断是否需要白色背景
+            no_white_background_categories = ["background", "illustration"]
+            is_background = category in no_white_background_categories
 
             engine_tasks.append({
                 "name": name,
@@ -100,7 +100,7 @@ def generate_game_asset(workspace_dir: str) -> str:
                 "category": category,
                 "style": style,
                 "size": size,
-                "need_green_screen": not is_background
+                "need_white_background": not is_background
             })
 
             print(f"  [{idx}] {name} - {category}/{style} - {description[:50]}...")
@@ -152,7 +152,7 @@ def generate_game_asset(workspace_dir: str) -> str:
                     message += f"  • {img_info.get('filename', '未知')}"
                     message += f" [{img_info.get('size', 'N/A')}]"
                     message += f" [{img_info.get('style', 'N/A')}]"
-                    if img_info.get('green_screen_removed') and img_info.get('pixels_removed', 0) > 0:
+                    if img_info.get('background_removed') and img_info.get('pixels_removed', 0) > 0:
                         message += f" (已抠图: {img_info.get('pixels_removed', 0):,} 像素)"
                     message += "\n"
 

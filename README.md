@@ -19,7 +19,8 @@
 这是一个基于豆包（Doubao）API 的游戏素材图像生成 MCP 工具，可以：
 
 - **批量生成游戏素材图像**：从 `tasks.json` 读取任务列表并批量生成
-- **自动绿幕抠图**：自动为角色、道具等素材生成绿幕背景并抠图
+- **智能白色背景抠图**：使用 GrabCut 图割算法自动移除白色背景，边缘平滑，支持半透明效果
+- **自动颜色校正**：智能增强边缘饱和度，去除灰白色溢出，提升抠图质量
 - **智能尺寸优化**：自动选择最佳 API 尺寸（512-2048），支持任意目标尺寸
 - **智能分类处理**：根据素材类型（角色、UI、背景等）添加合适的系统提示词
 - **与 Qwen Code 集成**：作为 MCP 工具，可在 Qwen Code 中直接调用
@@ -41,6 +42,7 @@
 - `numpy` - 数值计算
 - `requests` - HTTP 请求
 - `mcp` - MCP 服务器框架
+- `opencv-python` - 图像处理（GrabCut 抠图算法）
 
 ### API 要求
 
@@ -63,7 +65,7 @@ venv\Scripts\activate  # Windows
 ### 2. 安装依赖
 
 ```bash
-pip install openai python-dotenv pillow numpy requests mcp
+pip install openai python-dotenv pillow numpy requests mcp opencv-python
 ```
 
 ### 3. 配置 API Key
@@ -93,14 +95,19 @@ ARK_API_KEY=your_doubao_api_key_here
       "args": [
         "toolsPATH/img-gen-tool/mcp_server.py"
       ],
-      "timeout": 30000
+      "timeout": 300000
     }
   },
   "$version": 2
 }
 ```
 
-**⚠️ 重要：** 测试时使用的是绝对路径，不知道能不能用相对路径。
+**⚠️ 重要提示：**
+- **超时时间**：建议设置为 `300000`（5 分钟）或更高
+  - 单张图像生成通常需要 10-30 秒
+  - 批量生成多张图会更久
+  - GrabCut 算法比简单算法慢约 2-3 倍
+- **路径配置**：测试时使用的是绝对路径，相对路径可能不可靠
 
 ---
 
@@ -116,7 +123,7 @@ ARK_API_KEY=your_doubao_api_key_here
 3. 工具读取 tasks.json 并批量生成图像
    ├─ 智能计算最佳 API 尺寸（512-2048 范围）
    ├─ 调用 API 生成图像
-   ├─ 自动移除绿幕背景（如需要）
+   ├─ 自动移除白色背景（如需要）
    └─ 自动缩放到目标尺寸（如需要）
    ↓
 4. 图像保存到 workspace_dir/public/assets/
@@ -210,7 +217,7 @@ qwen code 会在项目的 `public/tasks.json` 文件中填写任务，例如：
 | 字段            | 是否必填 | 默认值          | 说明                                            |
 | --------------- | -------- | --------------- | ----------------------------------------------- |
 | `description` | ✅ 必填  | 无              | 图像的详细描述，如 "一个手持火焰剑的红发女战士" |
-| `category`    | ❌ 可选  | `"none"`      | 素材分类，影响系统提示词和是否抠图              |
+| `category`    | ❌ 可选  | `"none"`      | 素材分类，影响系统提示词和背景颜色              |
 | `style`       | ❌ 可选  | `"cartoon"`   | 美术风格                                        |
 | `name`        | ❌ 可选  | 自动生成        | 保存的文件名（不含 .png 后缀）                  |
 | `size`        | ❌ 可选  | `"2048x2048"` | 图像尺寸                                        |
@@ -227,7 +234,7 @@ qwen code 会在项目的 `public/tasks.json` 文件中填写任务，例如：
 
 ### category（素材分类）
 
-| 值                | 说明       | 绿幕抠图 | 系统提示词                                      |
+| 值                | 说明       | 白色背景 | 系统提示词                                      |
 | ----------------- | ---------- | -------- | ----------------------------------------------- |
 | `char_portrait` | 角色立绘   | ✅ 是    | 角色立绘，清晰轮廓，立绘设计，适合对话界面使用  |
 | `char_sprite`   | 角色小人   | ✅ 是    | 角色小人，游戏精灵，清晰轮廓，适合游戏场景使用  |
@@ -241,8 +248,8 @@ qwen code 会在项目的 `public/tasks.json` 文件中填写任务，例如：
 
 **重要说明：**
 
-- 只有 `background` 和 `illustration` **不会** 生成绿幕和抠图
-- 其他所有分类都会 **强制** 生成绿幕背景并自动抠图
+- 只有 `background` 和 `illustration` **不会** 生成白色背景
+- 其他所有分类都会 **强制** 生成纯白色背景并自动抠图
 
 ### style（美术风格）
 
@@ -300,7 +307,33 @@ qwen code 会在项目的 `public/tasks.json` 文件中填写任务，例如：
 
 ## 常见问题
 
-### Q1: 图像生成失败怎么办？
+### Q1: MCP error -32001: Request timed out 怎么办？
+
+**症状：** 图像生成成功了，但 Qwen Code 报告超时错误
+
+**原因：** MCP 服务器等待响应超时（默认 30 秒不够）
+
+**解决方案：**
+
+1. **增加 MCP 配置中的 timeout 值**（推荐）：
+   ```json
+   {
+     "mcpServers": {
+       "image-gen-tool": {
+         "timeout": 300000  // 改为 300000 (5分钟) 或更高
+       }
+     }
+   }
+   ```
+
+2. **优化处理速度**（如果仍然超时）：
+   - 减少批量生成的图像数量（建议单次不超过 5 张）
+   - 使用 `simple` 算法代替 `grabcut`（速度快 2-3 倍）
+   - 减少 `grabcut_iterations` 值（从 5 降到 3）
+
+3. **重启 Qwen Code** 使配置生效
+
+### Q2: 图像生成失败怎么办？
 
 **检查清单：**
 
@@ -312,7 +345,7 @@ qwen code 会在项目的 `public/tasks.json` 文件中填写任务，例如：
 **查看错误信息：**
 工具会在返回消息中显示详细的错误信息。
 
-### Q2: 如何修改默认风格？
+### Q3: 如何修改默认风格？
 
 在 `main.py` 中修改：
 
@@ -321,20 +354,44 @@ qwen code 会在项目的 `public/tasks.json` 文件中填写任务，例如：
 ART_STYLE = "cartoon"  # 改为 "pixel" 或 "realistic"
 ```
 
-### Q3: 如何调整绿幕抠图的灵敏度？
+### Q4: 如何调整背景移除的灵敏度和算法？
 
 在 `main.py` 中修改：
 
 ```python
-GREEN_SCREEN_CONFIG = {
+BACKGROUND_REMOVAL_CONFIG = {
     "skip_backgrounds": True,
     "overwrite": True,
-    "tolerance": 40,    # 增大此值可移除更多绿色区域（0-100）
-    "threshold": 100,   # 绿色阈值（0-255）
+    "tolerance": 40,              # 颜色容差（0-100，数值越大移除范围越广）
+    "threshold": 200,             # 白色阈值（0-255，建议 200-240）
+    "algorithm": "grabcut",       # 算法选择: "simple" 或 "grabcut"
+    "grabcut_iterations": 5,      # GrabCut 迭代次数（1-10，越大越精确但越慢）
+    "edge_feather": 3,            # 边缘羽化半径（像素，0 表示不羽化）
+    "remove_color_spill": True,   # 是否移除颜色溢出（边缘色彩校正）
 }
 ```
 
-### Q4: tasks.json 被清空了怎么恢复？
+**算法说明：**
+
+- **`"grabcut"`**（推荐，默认）：
+  - 使用 OpenCV GrabCut 图割算法
+  - 边缘平滑，支持半透明效果
+  - 自动增强边缘饱和度，去除灰白色溢出
+  - 适合需要高质量抠图的场景（角色、道具等）
+
+- **`"simple"`**（快速，但边缘生硬）：
+  - 使用简单的颜色阈值检测
+  - 速度快，但边缘有锯齿
+  - 适合对边缘质量要求不高的场景
+
+**参数调优建议：**
+
+- `threshold`：白色阈值，200-240 之间通常效果最好，过低会误移除浅色物体
+- `tolerance`：颜色容差，默认 40，如果有彩色背景残留可减小此值
+- `grabcut_iterations`：默认 5 次通常足够，复杂图像可增加到 8-10
+- `edge_feather`：默认 3 像素，增大可获得更柔和的边缘
+
+### Q5: tasks.json 被清空了怎么恢复？
 
 工具不会完全清空，会保留一个空模板：
 
@@ -352,14 +409,17 @@ GREEN_SCREEN_CONFIG = {
 
 直接在模板基础上填写新任务即可。
 
-### Q5: 可以同时生成多少个任务？
+### Q6: 可以同时生成多少个任务？
 
 理论上没有限制，但建议：
 
-- 单次生成不超过 10 个任务
+- **单次生成不超过 5-10 个任务**
 - 大批量任务可分多次执行
+- 注意 MCP 超时限制（见 Q1）
+  - 使用 GrabCut 算法时，建议单次不超过 5 张
+  - 使用 Simple 算法时，可以增加到 10 张
 
-### Q6: 智能尺寸处理是如何工作的？
+### Q7: 智能尺寸处理是如何工作的？
 
 **工作原理：**
 
@@ -486,15 +546,16 @@ pip install openai python-dotenv pillow numpy requests mcp
 3. 检查 API Key 是否过期
 4. 确认 API Key 有图像生成权限
 
-### 问题 4: 绿幕抠图不完整
+### 问题 4: 背景移除不完整
 
-**症状：** 图像边缘仍有绿色残留
+**症状：** 图像边缘仍有白色/灰色残留
 
 **解决方案：**
 
-1. 增加 `tolerance` 值（在 `main.py` 的 `GREEN_SCREEN_CONFIG` 中）
-2. 调整 `threshold` 值
-3. 尝试重新生成图像
+1. 调整 `threshold` 值（在 `main.py` 的 `BACKGROUND_REMOVAL_CONFIG` 中）- 降低阈值可移除更多浅色区域
+2. 调整 `tolerance` 值 - 减小此值可以更严格地判断白色
+3. 增加 `grabcut_iterations` 值 - 提高迭代次数可以改善边缘质量
+4. 尝试重新生成图像
 
 ### 问题 5: tasks.json 格式错误
 
@@ -595,11 +656,12 @@ pillow>=10.0.0
 numpy>=1.24.0
 requests>=2.31.0
 mcp>=0.1.0
+opencv-python>=4.0.0
 ```
 
 安装依赖：`pip install -r requirements.txt`
 
 ---
 
-**最后更新时间：** 2025-12-04
-**文档版本：** v1.0
+**最后更新时间：** 2025-12-09
+**文档版本：** v1.2 - 白色背景替代绿幕，优化抠图效果
