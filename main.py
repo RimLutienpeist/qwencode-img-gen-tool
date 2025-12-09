@@ -34,11 +34,11 @@ AUTO_REMOVE_BACKGROUND = True  # True=自动移除 / False=保持原样
 BACKGROUND_REMOVAL_CONFIG = {
     "skip_backgrounds": True,  # 是否跳过背景/插画类素材（background, illustration）
     "overwrite": True,  # 是否覆盖原文件（False则创建 _nobg 副本）
-    "tolerance": 10,  # 颜色容差（0-100，数值越大移除范围越广）
-    "threshold": 245,  # 白色阈值（0-255，用于判断是否为白色，建议 200-240）
+    "tolerance": 5,  # 颜色容差（0-100，数值越大移除范围越广）
+    "threshold": 250,  # 白色阈值（0-255，用于判断是否为白色，建议 200-240）
     "algorithm": "grabcut",  # 算法选择: "simple" 或 "grabcut"
-    "grabcut_iterations": 10,  # GrabCut 迭代次数（1-10，数值越大效果越好但越慢）
-    "edge_feather": 1,  # 边缘羽化半径（像素，0 表示不羽化）
+    "grabcut_iterations": 5,  # GrabCut 迭代次数（1-10，数值越大效果越好但越慢）
+    "edge_feather": 0,  # 边缘羽化半径（像素，0 表示不羽化）
     "remove_color_spill": True,  # 是否移除颜色溢出（边缘色彩校正）
 }
 
@@ -60,12 +60,12 @@ SYSTEM_PROMPTS = {
     "ui_asset": "UI组件，界面元素，清晰可辨识，扁平化设计",
     "sheet_effect": "序列帧特效，动态效果，连续帧设计，发光效果",
     "illustration": "插画设计，CG场景，完整构图，丰富细节",
-    "logo": "标志设计，标题文字，清晰可辨识，品牌感",
+    "logo": "标志设计，标题文字，清晰可辨识，品牌感，必须使用纯白色背景",
     "prop": "道具物品，物品设计，清晰轮廓，适合游戏使用",
     "background": "背景设计，场景底图，层次分明",
 
     # 纯白背景提示词（会根据need_white_background动态添加）
-    "white_background": "纯白色背景，RGB(255,255,255)，白色底色，white background，clean white backdrop",
+    "white_background": "纯白色背景，纯白底色，plain white background，solid white backdrop",
 }
 
 
@@ -82,7 +82,14 @@ def build_prompt(description, category=None, style=None, need_white_background=T
     Returns:
         str: 完整的提示词
     """
-    parts = [description]
+    parts = []
+
+    # 优先添加白色背景要求（放在最前面，提高优先级）
+    if need_white_background:
+        parts.append(SYSTEM_PROMPTS["white_background"])
+
+    # 添加用户描述
+    parts.append(description)
 
     # 添加分类系统提示词
     if category and category in SYSTEM_PROMPTS:
@@ -90,10 +97,6 @@ def build_prompt(description, category=None, style=None, need_white_background=T
     elif category == "none":
         # 如果明确指定 "none"，则不添加分类提示词
         pass
-
-    # 强制添加纯白背景（除非明确指定不需要）
-    if need_white_background:
-        parts.append(SYSTEM_PROMPTS["white_background"])
 
     # 添加风格提示词
     if style is None:
@@ -297,7 +300,8 @@ def remove_white_background_simple(filepath, name, skip_backgrounds=True, overwr
         tuple: (是否成功, 处理的像素数)
     """
     # 检查是否为背景素材（只有 background 和 illustration 不需要抠图）
-    no_background_removal_categories = ["background", "illustration"]
+    # no_background_removal_categories = ["background", "illustration"]
+    no_background_removal_categories = ["background"]
     is_background = category in no_background_removal_categories
 
     if skip_backgrounds and is_background:
@@ -396,7 +400,8 @@ def remove_white_background_grabcut(filepath, name, skip_backgrounds=True, overw
         tuple: (是否成功, 处理的像素数)
     """
     # 检查是否为背景素材
-    no_background_removal_categories = ["background", "illustration"]
+    # no_background_removal_categories = ["background", "illustration"]
+    no_background_removal_categories = ["background"]
     is_background = category in no_background_removal_categories
 
     if skip_backgrounds and is_background:
