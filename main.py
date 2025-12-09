@@ -34,12 +34,13 @@ AUTO_REMOVE_BACKGROUND = True  # True=自动移除 / False=保持原样
 BACKGROUND_REMOVAL_CONFIG = {
     "skip_backgrounds": True,  # 是否跳过背景/插画类素材（background, illustration）
     "overwrite": True,  # 是否覆盖原文件（False则创建 _nobg 副本）
-    "tolerance": 5,  # 颜色容差（0-100，数值越大移除范围越广）
-    "threshold": 250,  # 白色阈值（0-255，用于判断是否为白色，建议 200-240）
+    "tolerance": 5,  # 颜色容差（欧氏距离阈值，数值越大移除范围越广0）
+    "threshold": 250,  # 白色阈值（0-255，用于判断是否为白色，仅在 auto_detect=False 时使用）
     "algorithm": "grabcut",  # 算法选择: "simple" 或 "grabcut"
     "grabcut_iterations": 5,  # GrabCut 迭代次数（1-10，数值越大效果越好但越慢）
-    "edge_feather": 0,  # 边缘羽化半径（像素，0 表示不羽化）
+    "edge_feather": 1,  # 边缘羽化半径（像素，0 表示不羽化）
     "remove_color_spill": True,  # 是否移除颜色溢出（边缘色彩校正）
+    "auto_detect_background": False,  # 是否自动检测背景色（True=自适应任意背景色，False=固定白色）
 }
 
 # ==================== 系统提示词 ====================
@@ -58,18 +59,21 @@ SYSTEM_PROMPTS = {
     "char_portrait": "角色立绘，清晰轮廓，立绘设计，适合对话界面使用",
     "char_sprite": "角色小人，游戏精灵，清晰轮廓，适合游戏场景使用",
     "ui_asset": "UI组件，界面元素，清晰可辨识，扁平化设计",
-    "sheet_effect": "序列帧特效，动态效果，连续帧设计，发光效果",
+    "effect": "特效元素，视觉效果，发光效果，动态感",
     "illustration": "插画设计，CG场景，完整构图，丰富细节",
     "logo": "标志设计，标题文字，清晰可辨识，品牌感，必须使用纯白色背景",
     "prop": "道具物品，物品设计，清晰轮廓，适合游戏使用",
     "background": "背景设计，场景底图，层次分明",
+
+    # 序列帧提示词（当 sheet=True 时添加）
+    "sheet": "序列帧设计，连续帧动画，动作分解，帧与帧之间动作连贯，适合sprite sheet",
 
     # 纯白背景提示词（会根据need_white_background动态添加）
     "white_background": "纯白色背景，纯白底色，plain white background，solid white backdrop",
 }
 
 
-def build_prompt(description, category=None, style=None, need_white_background=True):
+def build_prompt(description, category=None, style=None, need_white_background=True, is_sheet=False):
     """
     构建完整提示词
 
@@ -78,6 +82,7 @@ def build_prompt(description, category=None, style=None, need_white_background=T
         category: 分类 (character/ui/scene/effect)，可选
         style: 风格 (pixel/cartoon/realistic)，可选，默认使用 ART_STYLE
         need_white_background: 是否需要纯白背景，默认True
+        is_sheet: 是否为序列帧，默认False
 
     Returns:
         str: 完整的提示词
@@ -90,6 +95,10 @@ def build_prompt(description, category=None, style=None, need_white_background=T
 
     # 添加用户描述
     parts.append(description)
+
+    # 添加序列帧提示词
+    if is_sheet:
+        parts.append(SYSTEM_PROMPTS["sheet"])
 
     # 添加分类系统提示词
     if category and category in SYSTEM_PROMPTS:
@@ -281,6 +290,82 @@ def resize_image(filepath, target_size, name):
 
 # ==================== 背景移除函数 ====================
 
+def detect_background_color(img, debug=False):
+    """
+    通过采样图像边缘和角落区域自动检测背景色
+
+    Args:
+        img: OpenCV 图像 (BGR 格式)
+        debug: 是否输出调试信息
+
+    Returns:
+        tuple: (bg_color, bg_std, is_pure)
+            - bg_color: 背景颜色 (B, G, R) numpy array
+            - bg_std: 标准差（判断背景纯度）
+            - is_pure: 背景是否纯净（True/False）
+    """
+    h, w = img.shape[:2]
+
+    # 1. 计算边缘采样宽度（至少 10 像素，最多图像宽高的 10%）
+    border_width = max(10, min(w, h) // 10)
+
+    # 2. 采样边缘区域
+    edge_samples = []
+    edge_samples.append(img[0:border_width, :])           # 上边缘
+    edge_samples.append(img[-border_width:, :])           # 下边缘
+    edge_samples.append(img[:, 0:border_width])           # 左边缘
+    edge_samples.append(img[:, -border_width:])           # 右边缘
+
+    # 3. 采样四个角落（20x20 区域）
+    corner_size = min(20, min(w, h) // 10)
+    corners = [
+        img[0:corner_size, 0:corner_size],                # 左上
+        img[0:corner_size, -corner_size:],                # 右上
+        img[-corner_size:, 0:corner_size],                # 左下
+        img[-corner_size:, -corner_size:]                 # 右下
+    ]
+
+    # 4. 合并所有采样（reshape 为 (N, 3)）
+    all_samples = []
+    for sample in edge_samples + corners:
+        all_samples.append(sample.reshape(-1, 3))
+    all_samples = np.vstack(all_samples)
+
+    # 5. 计算中位数作为背景色（比均值更鲁棒，抗干扰）
+    bg_color = np.median(all_samples, axis=0).astype(np.uint8)
+
+    # 6. 计算标准差（判断背景纯度）
+    bg_std = np.std(all_samples.astype(np.float32), axis=0).mean()
+
+    # 7. 判断背景是否纯净（标准差 < 30 为纯净）
+    is_pure = bg_std < 30
+
+    if debug:
+        print(f"         背景检测: BGR={bg_color}, 标准差={bg_std:.1f}, 纯净度={'✓' if is_pure else '✗'}")
+
+    return bg_color, bg_std, is_pure
+
+
+def is_background_color(img, bg_color, tolerance=40):
+    """
+    检测像素是否为背景色（基于欧氏距离）
+
+    Args:
+        img: 图像 (H, W, 3)
+        bg_color: 背景颜色 (B, G, R)
+        tolerance: 容差（欧氏距离阈值）
+
+    Returns:
+        mask: 布尔数组 (H, W)，True 表示背景像素
+    """
+    # 计算每个像素与背景色的欧氏距离
+    diff = img.astype(np.float32) - bg_color.astype(np.float32)
+    distance = np.sqrt(np.sum(diff ** 2, axis=2))
+
+    # 距离小于容差 = 背景
+    return distance < tolerance
+
+
 def remove_white_background_simple(filepath, name, skip_backgrounds=True, overwrite=True, tolerance=40, threshold=200, category=None):
     """
     移除白色背景（简单算法）
@@ -378,9 +463,10 @@ def remove_white_background_simple(filepath, name, skip_backgrounds=True, overwr
 
 def remove_white_background_grabcut(filepath, name, skip_backgrounds=True, overwrite=True,
                                     tolerance=40, threshold=200, category=None,
-                                    iterations=5, edge_feather=3, remove_spill=True):
+                                    iterations=5, edge_feather=3, remove_spill=True,
+                                    auto_detect=False):
     """
-    移除白色背景（GrabCut 算法）
+    移除背景（GrabCut 算法 - 支持自适应背景色检测）
 
     使用 OpenCV 的 GrabCut 图割算法进行智能抠图，支持边缘羽化和颜色溢出去除
 
@@ -389,12 +475,13 @@ def remove_white_background_grabcut(filepath, name, skip_backgrounds=True, overw
         name: 素材名称
         skip_backgrounds: 是否跳过背景/插画素材
         overwrite: 是否覆盖原文件
-        tolerance: 颜色容差（0-100，数值越大移除范围越广）
-        threshold: 白色阈值（0-255，用于判断亮度，建议 200-240）
+        tolerance: 颜色容差（欧氏距离阈值，建议 30-60）
+        threshold: 白色阈值（0-255，仅在 auto_detect=False 时使用）
         category: 素材分类（用于判断是否为 background 或 illustration）
         iterations: GrabCut 迭代次数（1-10，数值越大效果越好但越慢）
         edge_feather: 边缘羽化半径（像素，0 表示不羽化）
         remove_spill: 是否移除颜色溢出
+        auto_detect: 是否自动检测背景色（True=自适应，False=固定白色）
 
     Returns:
         tuple: (是否成功, 处理的像素数)
@@ -421,17 +508,41 @@ def remove_white_background_grabcut(filepath, name, skip_backgrounds=True, overw
         # 提取 RGB 通道（OpenCV 使用 BGR 格式）
         b, g, r = cv2.split(img)
 
-        # 白色背景检测逻辑（与简单算法相同）
-        brightness = (r.astype(np.float32) + g.astype(np.float32) + b.astype(np.float32)) / 3
-        is_bright = brightness > threshold
+        if auto_detect:
+            # 模式 A: 自适应背景色检测
+            print(f"         使用自适应背景检测...")
+            bg_color, bg_std, is_pure = detect_background_color(img, debug=True)
 
-        # RGB 通道值相近（接近灰度/白色）
-        max_channel = np.maximum(np.maximum(r, g), b)
-        min_channel = np.minimum(np.minimum(r, g), b)
-        color_diff = max_channel - min_channel
-        is_neutral = color_diff < tolerance
+            # 如果背景不纯净，提示警告但继续处理
+            if not is_pure:
+                print(f"         ⚠️  背景不够纯净（标准差={bg_std:.1f}），可能影响抠图效果")
 
-        is_white = is_bright & is_neutral
+            # 基于检测到的背景色生成掩码
+            is_bg = is_background_color(img, bg_color, tolerance=tolerance)
+
+            # 计算距离用于判断明确前景
+            diff = img.astype(np.float32) - bg_color.astype(np.float32)
+            distance = np.sqrt(np.sum(diff ** 2, axis=2))
+
+            # 明确前景：距离背景色较远的区域
+            # 使用动态阈值：tolerance * 2 作为前景判断阈值
+            is_definite_fg = distance > (tolerance * 2)
+
+        else:
+            # 模式 B: 固定白色检测（原有逻辑）
+            brightness = (r.astype(np.float32) + g.astype(np.float32) + b.astype(np.float32)) / 3
+            is_bright = brightness > threshold
+
+            # RGB 通道值相近（接近灰度/白色）
+            max_channel = np.maximum(np.maximum(r, g), b)
+            min_channel = np.minimum(np.minimum(r, g), b)
+            color_diff = max_channel - min_channel
+            is_neutral = color_diff < tolerance
+
+            is_bg = is_bright & is_neutral
+
+            # 明确的前景（非白色且亮度较低的区域）
+            is_definite_fg = ~is_bg & (brightness < threshold - 50)
 
         # 创建 GrabCut 掩码
         # GrabCut 使用 4 个值：
@@ -441,14 +552,10 @@ def remove_white_background_grabcut(filepath, name, skip_backgrounds=True, overw
         # 3 = GC_PR_FGD (可能前景)
         mask = np.full((height, width), cv2.GC_PR_FGD, dtype=np.uint8)  # 默认为可能前景
 
-        # 明确的背景（白色区域）
-        mask[is_white] = cv2.GC_BGD
+        # 明确的背景
+        mask[is_bg] = cv2.GC_BGD
 
-        # 明确的前景（非白色且亮度较低的区域）
-        # 使用形态学操作找出明确的前景
-        is_definite_fg = ~is_white & (brightness < threshold - 50)
-
-        # 腐蚀操作找出核心前景区域
+        # 腐蚀操作找出核心前景区域（避免边缘误判）
         kernel = np.ones((5, 5), np.uint8)
         is_definite_fg = cv2.erode(is_definite_fg.astype(np.uint8), kernel, iterations=1).astype(bool)
         mask[is_definite_fg] = cv2.GC_FGD
@@ -582,7 +689,8 @@ def remove_background(filepath, name, skip_backgrounds=True, overwrite=True,
             tolerance, threshold, category,
             iterations=kwargs.get('grabcut_iterations', 5),
             edge_feather=kwargs.get('edge_feather', 3),
-            remove_spill=kwargs.get('remove_color_spill', True)
+            remove_spill=kwargs.get('remove_color_spill', True),
+            auto_detect=kwargs.get('auto_detect_background', False)
         )
     else:  # algorithm == "simple"
         return remove_white_background_simple(
@@ -631,7 +739,8 @@ def generate_images(tasks, output_dir="./generated-images"):
                 description=task["description"],
                 category=task.get("category"),
                 style=actual_style,
-                need_white_background=task.get("need_white_background", True)
+                need_white_background=task.get("need_white_background", True),
+                is_sheet=task.get("is_sheet", False)
             )
         else:
             error_msg = f"缺少 prompt 或 description"

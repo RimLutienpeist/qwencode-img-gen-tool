@@ -24,13 +24,23 @@ mcp = FastMCP("DoubaoAssetGenerator")
 @mcp.tool()
 def generate_game_asset(workspace_dir: str) -> str:
     """
-    从 tasks.json 读取任务列表并批量生成游戏素材图像，自动移除白色背景。
+    从 tasks.json 读取任务列表并批量生成游戏素材图像，智能移除背景。
 
-    此工具会自动完成：
+    🎨 核心功能：
     1. 读取 workspace_dir/public/tasks.json 文件获取任务列表
     2. 为每个任务生成图像 (保存到 workspace_dir/public/assets/)
-    3. 移除白色背景（除 background 和 illustration 外，其他分类会强制生成白色背景并自动抠图）
-    4. 生成完成后清空 tasks.json 文件
+    3. 自适应背景检测 - 自动识别并移除任意纯色背景（白色/黑色/蓝色/灰色等）
+    4. 智能抠图 - 使用 GrabCut 算法，边缘平滑，支持半透明效果
+    5. 生成完成后重置 tasks.json 为空模板
+
+    📋 背景处理规则：
+    - background 和 illustration 类别：保留原始背景（不抠图）
+    - 其他类别（角色、UI、道具等）：自动检测并移除背景色
+
+    🔧 智能尺寸优化：
+    - 支持任意尺寸（如 128x128、1024x1024、4096x4096）
+    - 自动选择最佳 API 尺寸（512-2048 范围）
+    - 高质量 LANCZOS 缩放
 
     Args:
         workspace_dir: Qwen Code 的工作目录路径 (例如: "/home/user/phaser-frame-lite")
@@ -38,13 +48,34 @@ def generate_game_asset(workspace_dir: str) -> str:
     tasks.json 格式:
     [
       {
-        "description": "图像描述",
-        "category": "char_portrait|char_sprite|ui_asset|sheet_effect|illustration|logo|prop|background|none",
-        "style": "pixel|cartoon|realistic",
+        "description": "图像描述（必填）",
+        "category": "char_portrait|char_sprite|sheet_char|ui_asset|effect|illustration|logo|prop|background|none（可选，默认 none）",
+        "style": "pixel|cartoon|realistic（可选，默认 cartoon）",
         "name": "文件名（不含后缀）",
-        "size": "numxnum (例如 1024x512)"
+        "size": "宽x高（如 1024x512）",
+        "is_sheet": true|false（可选，是否为序列帧，默认 false）
       }
     ]
+
+    category 说明：
+    - char_portrait: 角色立绘（抠图）
+    - char_sprite: 角色小人/游戏精灵（抠图）
+    - sheet_char: 角色序列帧/精灵动画（抠图，建议配合 sheet:true）
+    - ui_asset: UI 组件（抠图）
+    - effect: 特效元素（抠图）
+    - logo: 标志/标题（抠图）
+    - prop: 道具/物品（抠图）
+    - illustration: 插画/CG（不抠图）
+    - background: 背景/底图（不抠图）
+    - none: 无分类（抠图）
+
+    style 说明：
+    - pixel: 像素风格（8bit/16bit 复古游戏风格）
+    - cartoon: 卡通风格（漫画渲染，明快色彩）
+    - realistic: 写实风格（3D 渲染，高细节）
+
+    Returns:
+        str: 批量生成结果报告，包含成功/失败数量、文件列表、错误详情等
     """
 
     try:
@@ -84,6 +115,8 @@ def generate_game_asset(workspace_dir: str) -> str:
             style = task_data.get("style", "cartoon").strip() or "cartoon"
             name = task_data.get("name", "").strip()
             size = task_data.get("size", "2048x2048").strip() or "2048x2048"
+            # 读取序列帧选项（兼容 is_sheet 和 sheet 两种写法）
+            is_sheet = task_data.get("is_sheet", task_data.get("sheet", False))
 
             # 如果没有提供名字，自动生成
             if not name:
@@ -100,10 +133,12 @@ def generate_game_asset(workspace_dir: str) -> str:
                 "category": category,
                 "style": style,
                 "size": size,
-                "need_white_background": not is_background
+                "need_white_background": not is_background,
+                "is_sheet": is_sheet
             })
 
-            print(f"  [{idx}] {name} - {category}/{style} - {description[:50]}...")
+            sheet_label = "🎞️ 序列帧" if is_sheet else ""
+            print(f"  [{idx}] {name} - {category}/{style} {sheet_label}- {description[:50]}...")
 
         # 4. 调用主程序生成图像
         result = engine.generate_images(engine_tasks, output_dir=assets_dir)
@@ -117,7 +152,8 @@ def generate_game_asset(workspace_dir: str) -> str:
                     "category": "",
                     "style": "",
                     "name": "",
-                    "size": ""
+                    "size": "",
+                    "is_sheet": False
                 }
             ]
             with open(tasks_json_path, "w", encoding="utf-8") as f:
