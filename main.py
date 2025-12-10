@@ -17,12 +17,40 @@ load_dotenv()  # 从 .env 加载到环境变量
 
 # 初始化 OpenAI 客户端
 client = OpenAI(
-    base_url="https://ark.cn-beijing.volces.com/api/v3",
+    base_url=os.environ.get("ARK_BASE_URL"),
     api_key=os.environ.get("ARK_API_KEY"),
 )
 
 
 # ==================== 配置区域 ====================
+
+# 模型选择
+MODEL_NAME = "doubao-seedream-3-0-t2i-250415"  # 默认使用 3.0 模型
+
+# 模型尺寸范围配置
+MODEL_SIZE_RANGES = {
+    "doubao-seedream-3-0-t2i-250415": {
+        "min_width": 512,
+        "min_height": 512,
+        "max_width": 2048,
+        "max_height": 2048,
+        "description": "SeedreamV3 - 标准模型"
+    },
+    "doubao-seedream-4-0-250828": {
+        "min_width": 1280,
+        "min_height": 720,
+        "max_width": 4096,
+        "max_height": 4096,
+        "description": "SeedreamV4 - 高清模型"
+    },
+    "doubao-seedream-4-5-251128": {
+        "min_width": 2560,
+        "min_height": 1440,
+        "max_width": 4096,
+        "max_height": 4096,
+        "description": "SeedreamV4.5 - 超高清模型"
+    }
+}
 
 # 美术风格选择
 ART_STYLE = "cartoon"  # pixel / cartoon / realistic
@@ -34,13 +62,13 @@ AUTO_REMOVE_BACKGROUND = True  # True=自动移除 / False=保持原样
 BACKGROUND_REMOVAL_CONFIG = {
     "skip_backgrounds": True,  # 是否跳过背景/插画类素材（background, illustration）
     "overwrite": True,  # 是否覆盖原文件（False则创建 _nobg 副本）
-    "tolerance": 5,  # 颜色容差（欧氏距离阈值，数值越大移除范围越广0）
+    "tolerance": 40,  # 颜色容差（欧氏距离阈值，建议 30-50）
     "threshold": 250,  # 白色阈值（0-255，用于判断是否为白色，仅在 auto_detect=False 时使用）
     "algorithm": "grabcut",  # 算法选择: "simple" 或 "grabcut"
     "grabcut_iterations": 5,  # GrabCut 迭代次数（1-10，数值越大效果越好但越慢）
     "edge_feather": 1,  # 边缘羽化半径（像素，0 表示不羽化）
     "remove_color_spill": True,  # 是否移除颜色溢出（边缘色彩校正）
-    "auto_detect_background": False,  # 是否自动检测背景色（True=自适应任意背景色，False=固定白色）
+    "auto_detect_background": True,  # 🆕 启用自动检测背景色（支持黑/白/蓝/灰等任意纯色背景）
 }
 
 # ==================== 系统提示词 ====================
@@ -59,30 +87,34 @@ SYSTEM_PROMPTS = {
     "char_portrait": "角色立绘，清晰轮廓，立绘设计，适合对话界面使用",
     "char_sprite": "角色小人，游戏精灵，清晰轮廓，适合游戏场景使用",
     "ui_asset": "UI组件，界面元素，清晰可辨识，扁平化设计",
-    "effect": "特效元素，视觉效果，发光效果，动态感",
+    "effect": "特效元素，视觉效果",
     "illustration": "插画设计，CG场景，完整构图，丰富细节",
     "logo": "标志设计，标题文字，清晰可辨识，品牌感，必须使用纯白色背景",
     "prop": "道具物品，物品设计，清晰轮廓，适合游戏使用",
     "background": "背景设计，场景底图，层次分明",
 
     # 序列帧提示词（当 sheet=True 时添加）
-    "sheet": "序列帧设计，连续帧动画，动作分解，帧与帧之间动作连贯，适合sprite sheet",
+    "sheet": "序列帧设计，连续帧动画，动画分解，帧与帧之间动画连贯，帧均匀分布",
 
     # 纯白背景提示词（会根据need_white_background动态添加）
     "white_background": "纯白色背景，纯白底色，plain white background，solid white backdrop",
 }
 
 
-def build_prompt(description, category=None, style=None, need_white_background=True, is_sheet=False):
+def build_prompt(description, category=None, style=None, need_white_background=True, is_sheet=None):
     """
     构建完整提示词
 
     Args:
-        description: 具体描述（必填）
+        description: 具体描述（必填，普通任务用；序列帧任务可为None）
         category: 分类 (character/ui/scene/effect)，可选
         style: 风格 (pixel/cartoon/realistic)，可选，默认使用 ART_STYLE
         need_white_background: 是否需要纯白背景，默认True
-        is_sheet: 是否为序列帧，默认False
+        is_sheet: 序列帧配置，格式：
+                  - False 或 None: 普通单帧图像
+                  - [False]: 普通单帧图像
+                  - [True, 帧数, 主体描述, 动画内容]: 序列帧
+                    例如: [True, 8, "骑士角色", "行走动画从站立到跑步"]
 
     Returns:
         str: 完整的提示词
@@ -93,12 +125,31 @@ def build_prompt(description, category=None, style=None, need_white_background=T
     if need_white_background:
         parts.append(SYSTEM_PROMPTS["white_background"])
 
-    # 添加用户描述
-    parts.append(description)
+    # 处理序列帧格式
+    is_sheet_animation = False
+    if is_sheet and isinstance(is_sheet, (list, tuple)) and len(is_sheet) >= 1 and is_sheet[0]:
+        # 序列帧模式：[True, 帧数, 主体描述, 动画内容]
+        is_sheet_animation = True
 
-    # 添加序列帧提示词
-    if is_sheet:
-        parts.append(SYSTEM_PROMPTS["sheet"])
+        if len(is_sheet) >= 4:
+            frame_count = is_sheet[1]  # 帧数
+            subject = is_sheet[2]       # 主体描述
+            animation = is_sheet[3]     # 动画内容
+
+            # 构建序列帧描述：主体 + sheet提示词 + 帧数 + 动画内容
+            parts.append(subject)
+            parts.append(SYSTEM_PROMPTS["sheet"])
+            parts.append(f"共 {frame_count} 帧")
+            parts.append(f"动画内容: {animation}")
+        else:
+            # 格式不完整，回退到简单模式
+            is_sheet_animation = False
+            if description:
+                parts.append(description)
+    else:
+        # 普通模式：使用 description
+        if description:
+            parts.append(description)
 
     # 添加分类系统提示词
     if category and category in SYSTEM_PROMPTS:
@@ -138,40 +189,41 @@ def load_tasks(config_file="tasks.json"):
         tasks = config.get('tasks', [])
 
         if not tasks:
-            print(f"⚠️  警告: {config_file} 中的 tasks 数组为空")
+            print(f"警告: {config_file} 中的 tasks 数组为空")
             print(f"请在配置文件中添加要生成的图像任务")
             return []
 
-        print(f"✅ 从 {config_file} 加载了 {len(tasks)} 个任务")
+        print(f"从 {config_file} 加载了 {len(tasks)} 个任务")
         return tasks
 
     except FileNotFoundError:
-        print(f"❌ 错误: 找不到配置文件 {config_file}")
+        print(f"错误: 找不到配置文件 {config_file}")
         print(f"请确保 {config_file} 文件存在于当前目录")
         return []
     except json.JSONDecodeError as e:
-        print(f"❌ 错误: {config_file} 格式错误")
+        print(f"错误: {config_file} 格式错误")
         print(f"   {e}")
         return []
     except Exception as e:
-        print(f"❌ 错误: 无法读取配置文件")
+        print(f"错误: 无法读取配置文件")
         print(f"   {e}")
         return []
 
 
 # ==================== 智能尺寸计算函数 ====================
 
-def calculate_api_size(target_size):
+def calculate_api_size(target_size, model_name=None):
     """
-    根据目标尺寸计算最佳的 API 调用尺寸
+    根据目标尺寸和模型配置计算最佳的 API 调用尺寸
 
     规则：
-    - 如果目标尺寸在 512x512 - 2048x2048 范围内，直接使用
-    - 如果小于 512x512，放大到范围内（倍乘）
-    - 如果大于 2048x2048，缩小到范围内（倍除）
+    - 如果目标尺寸在模型支持的范围内，直接使用
+    - 如果小于最小尺寸，放大到范围内（倍乘）
+    - 如果大于最大尺寸，缩小到范围内（倍除）
 
     Args:
         target_size: 目标尺寸字符串，格式 "宽x高" (例如: "256x256")
+        model_name: 模型名称，默认使用 MODEL_NAME
 
     Returns:
         tuple: (api_size字符串, scale_factor浮点数, need_resize布尔值)
@@ -180,27 +232,39 @@ def calculate_api_size(target_size):
         - need_resize: 是否需要生成后缩放
     """
     try:
+        # 使用默认模型或指定模型
+        if model_name is None:
+            model_name = MODEL_NAME
+
+        # 获取模型配置
+        if model_name not in MODEL_SIZE_RANGES:
+            print(f"⚠️  警告: 模型 {model_name} 未配置，使用默认范围")
+            model_config = MODEL_SIZE_RANGES["doubao-seedream-3-0-t2i-250415"]
+        else:
+            model_config = MODEL_SIZE_RANGES[model_name]
+
+        MIN_WIDTH = model_config["min_width"]
+        MIN_HEIGHT = model_config["min_height"]
+        MAX_WIDTH = model_config["max_width"]
+        MAX_HEIGHT = model_config["max_height"]
+
         # 解析目标尺寸
         if 'x' not in target_size.lower():
-            return "1024x1024", 1.0, False
+            return f"{MIN_WIDTH}x{MIN_HEIGHT}", 1.0, False
 
         width, height = map(int, target_size.lower().split('x'))
 
-        # API 支持的尺寸范围
-        MIN_SIZE = 512
-        MAX_SIZE = 2048
-
         # 判断是否在支持范围内
-        if MIN_SIZE <= width <= MAX_SIZE and MIN_SIZE <= height <= MAX_SIZE:
+        if MIN_WIDTH <= width <= MAX_WIDTH and MIN_HEIGHT <= height <= MAX_HEIGHT:
             # 在范围内，直接使用
             return target_size, 1.0, False
 
         # 计算缩放因子
         # 如果任一维度小于最小值，需要放大
-        if width < MIN_SIZE or height < MIN_SIZE:
+        if width < MIN_WIDTH or height < MIN_HEIGHT:
             # 计算需要放大的倍数（向上取整到 2 的幂次）
-            scale_w = MIN_SIZE / width if width < MIN_SIZE else 1
-            scale_h = MIN_SIZE / height if height < MIN_SIZE else 1
+            scale_w = MIN_WIDTH / width if width < MIN_WIDTH else 1
+            scale_h = MIN_HEIGHT / height if height < MIN_HEIGHT else 1
             scale_factor = max(scale_w, scale_h)
 
             # 向上取整到最接近的 2 的幂次（2, 4, 8...）
@@ -208,10 +272,10 @@ def calculate_api_size(target_size):
             scale_factor = 2 ** math.ceil(math.log2(scale_factor))
 
         # 如果任一维度大于最大值，需要缩小
-        elif width > MAX_SIZE or height > MAX_SIZE:
+        elif width > MAX_WIDTH or height > MAX_HEIGHT:
             # 计算需要缩小的倍数（向上取整到 2 的幂次）
-            scale_w = width / MAX_SIZE if width > MAX_SIZE else 1
-            scale_h = height / MAX_SIZE if height > MAX_SIZE else 1
+            scale_w = width / MAX_WIDTH if width > MAX_WIDTH else 1
+            scale_h = height / MAX_HEIGHT if height > MAX_HEIGHT else 1
             scale_factor = max(scale_w, scale_h)
 
             # 向上取整到最接近的 2 的幂次
@@ -228,8 +292,8 @@ def calculate_api_size(target_size):
         api_height = int(height * scale_factor)
 
         # 确保 API 尺寸在范围内
-        api_width = max(MIN_SIZE, min(MAX_SIZE, api_width))
-        api_height = max(MIN_SIZE, min(MAX_SIZE, api_height))
+        api_width = max(MIN_WIDTH, min(MAX_WIDTH, api_width))
+        api_height = max(MIN_HEIGHT, min(MAX_HEIGHT, api_height))
 
         api_size = f"{api_width}x{api_height}"
         need_resize = (api_width != width or api_height != height)
@@ -237,7 +301,7 @@ def calculate_api_size(target_size):
         return api_size, scale_factor, need_resize
 
     except Exception as e:
-        print(f"⚠️ 尺寸计算失败: {e}")
+        print(f"尺寸计算失败: {e}")
         return "1024x1024", 1.0, False
 
 
@@ -282,7 +346,7 @@ def resize_image(filepath, target_size, name):
         return True, original_size, (width, height)
 
     except Exception as e:
-        print(f"         ⚠️  图像缩放失败: {e}")
+        print(f"         图像缩放失败: {e}")
         import traceback
         traceback.print_exc()
         return False, None, None
@@ -455,7 +519,7 @@ def remove_white_background_simple(filepath, name, skip_backgrounds=True, overwr
         return True, pixels_removed
 
     except Exception as e:
-        print(f"         ⚠️  背景移除失败: {e}")
+        print(f"         背景移除失败: {e}")
         import traceback
         traceback.print_exc()
         return False, 0
@@ -515,7 +579,7 @@ def remove_white_background_grabcut(filepath, name, skip_backgrounds=True, overw
 
             # 如果背景不纯净，提示警告但继续处理
             if not is_pure:
-                print(f"         ⚠️  背景不够纯净（标准差={bg_std:.1f}），可能影响抠图效果")
+                print(f"         背景不够纯净（标准差={bg_std:.1f}），可能影响抠图效果")
 
             # 基于检测到的背景色生成掩码
             is_bg = is_background_color(img, bg_color, tolerance=tolerance)
@@ -570,7 +634,7 @@ def remove_white_background_grabcut(filepath, name, skip_backgrounds=True, overw
         try:
             cv2.grabCut(img, mask, None, bgd_model, fgd_model, iterations, cv2.GC_INIT_WITH_MASK)
         except cv2.error as e:
-            print(f"         ⚠️  GrabCut 算法失败，回退到简单算法: {e}")
+            print(f"         GrabCut 算法失败，回退到简单算法: {e}")
             # 如果 GrabCut 失败，使用简单的颜色检测
             pass
 
@@ -655,7 +719,7 @@ def remove_white_background_grabcut(filepath, name, skip_backgrounds=True, overw
         return True, pixels_removed
 
     except Exception as e:
-        print(f"         ⚠️  GrabCut 背景移除失败: {e}")
+        print(f"         GrabCut 背景移除失败: {e}")
         import traceback
         traceback.print_exc()
         return False, 0
@@ -715,7 +779,7 @@ def generate_images(tasks, output_dir="./generated-images"):
 
     print(f"开始生成 {len(tasks)} 张图像...")
     print(f"默认美术风格: {ART_STYLE}（可由任务参数覆盖）")
-    print(f"自动移除背景: {'✅ 开启' if AUTO_REMOVE_BACKGROUND else '❌ 关闭'}")
+    print(f"自动移除背景: {'开启' if AUTO_REMOVE_BACKGROUND else '关闭'}")
     print(f"输出目录: {full_output_dir}")
     print("="*80)
 
@@ -744,14 +808,14 @@ def generate_images(tasks, output_dir="./generated-images"):
             )
         else:
             error_msg = f"缺少 prompt 或 description"
-            print(f"[{idx}/{len(tasks)}] ❌ 跳过 {name} - {error_msg}")
+            print(f"[{idx}/{len(tasks)}] 跳过 {name} - {error_msg}")
             errors.append({"name": name, "error": error_msg})
             fail_count += 1
             continue
 
         if not prompt:
             error_msg = f"无效的提示词"
-            print(f"[{idx}/{len(tasks)}] ❌ 跳过 {name} - {error_msg}")
+            print(f"[{idx}/{len(tasks)}] 跳过 {name} - {error_msg}")
             errors.append({"name": name, "error": error_msg})
             fail_count += 1
             continue
@@ -759,10 +823,14 @@ def generate_images(tasks, output_dir="./generated-images"):
         # 获取目标图像尺寸
         target_size = task.get("size", "1024x1024")
 
-        # 计算最佳 API 尺寸
-        api_size, scale_factor, need_resize = calculate_api_size(target_size)
+        # 获取模型名称（优先使用任务指定的模型，否则使用全局配置）
+        model_name = task.get("model", MODEL_NAME)
+
+        # 计算最佳 API 尺寸（根据模型自动适配）
+        api_size, scale_factor, need_resize = calculate_api_size(target_size, model_name)
 
         print(f"\n[{idx}/{len(tasks)}] 正在生成: {name}")
+        print(f"使用模型: {model_name}")
         print(f"使用风格: {actual_style}")
         print(f"目标尺寸: {target_size}")
         print(f"API 生成尺寸: {api_size}")
@@ -773,10 +841,9 @@ def generate_images(tasks, output_dir="./generated-images"):
         print(f"提示词: {prompt[:100]}..." if len(prompt) > 100 else f"提示词: {prompt}")
 
         try:
-            # 调用豆包图像生成 API（使用智能计算的尺寸）
+            # 调用豆包图像生成 API（使用智能计算的尺寸和指定模型）
             imagesResponse = client.images.generate(
-                # model="doubao-seedream-4-0-250828",
-                model="doubao-seedream-3-0-t2i-250415",
+                model=model_name,
                 prompt=prompt,
                 size=api_size,  # 使用智能计算的 API 尺寸
                 response_format="url",
@@ -797,14 +864,14 @@ def generate_images(tasks, output_dir="./generated-images"):
                 with open(filename, "wb") as f:
                     f.write(response.content)
 
-                print(f"✅ 成功保存: {filename}")
+                print(f"成功保存: {filename}")
 
                 # 自动移除背景
                 background_removed = False
                 pixels_removed = 0
                 if AUTO_REMOVE_BACKGROUND:
                     algorithm = BACKGROUND_REMOVAL_CONFIG.get("algorithm", "grabcut")
-                    print(f"🔄 移除背景中 (算法: {algorithm})...")
+                    print(f"移除背景中 (算法: {algorithm})...")
                     background_removed, pixels_removed = remove_background(
                         filename,
                         name,
@@ -819,26 +886,26 @@ def generate_images(tasks, output_dir="./generated-images"):
                         remove_color_spill=BACKGROUND_REMOVAL_CONFIG.get("remove_color_spill", True)
                     )
                     if background_removed and pixels_removed > 0:
-                        print(f"✅ 背景已移除 (处理了 {pixels_removed:,} 个像素)")
+                        print(f"背景已移除 (处理了 {pixels_removed:,} 个像素)")
                     elif background_removed and pixels_removed == 0:
-                        print(f"ℹ️  未检测到白色背景")
+                        print(f"未检测到白色背景")
                     else:
                         # background_removed == False 说明跳过了（background 或 illustration）
-                        print(f"⏭️  跳过抠图（背景/插画类素材）")
+                        print(f"跳过抠图（背景/插画类素材）")
 
                 # 缩放图像到目标尺寸（如需要）
                 resized = False
                 original_size = None
                 final_size = None
                 if need_resize:
-                    print(f"🔄 缩放图像: {api_size} → {target_size}...")
+                    print(f"缩放图像: {api_size} → {target_size}...")
                     resized, original_size, final_size = resize_image(filename, target_size, name)
                     if resized:
-                        print(f"✅ 图像已缩放: {original_size} → {final_size}")
+                        print(f"图像已缩放: {original_size} → {final_size}")
                     else:
-                        print(f"⚠️  图像缩放失败")
+                        print(f"图像缩放失败")
                 else:
-                    print(f"ℹ️  尺寸已匹配，跳过缩放")
+                    print(f"尺寸已匹配，跳过缩放")
                     resized = True
                     # 解析 API 尺寸作为原始尺寸
                     api_w, api_h = map(int, api_size.lower().split('x'))
@@ -865,22 +932,22 @@ def generate_images(tasks, output_dir="./generated-images"):
 
             else:
                 error_msg = f"图片下载失败，状态码: {response.status_code}"
-                print(f"❌ {error_msg}")
+                print(f"{error_msg}")
                 errors.append({"name": name, "error": error_msg})
                 fail_count += 1
 
         except Exception as e:
             error_msg = f"{type(e).__name__}: {e}"
-            print(f"❌ 生成失败: {error_msg}")
+            print(f"生成失败: {error_msg}")
             errors.append({"name": name, "error": error_msg})
             fail_count += 1
 
     # 输出统计信息
     print("\n" + "="*80)
     print(f"生成完成！")
-    print(f"✅ 成功: {success_count} 个")
-    print(f"❌ 失败: {fail_count} 个")
-    print(f"📁 保存位置: {full_output_dir}/")
+    print(f"成功: {success_count} 个")
+    print(f"失败: {fail_count} 个")
+    print(f"保存位置: {full_output_dir}/")
 
     # 返回生成结果（供MCP服务器使用）
     return {
