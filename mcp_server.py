@@ -26,18 +26,18 @@ def generate_game_asset(workspace_dir: str) -> str:
     """
     从 tasks.json 读取任务列表并批量生成游戏素材图像，智能移除背景。
 
-    🎨 核心功能：
+    核心功能：
     1. 读取 workspace_dir/public/tasks.json 文件获取任务列表
     2. 为每个任务生成图像 (保存到 workspace_dir/public/assets/)
     3. 自适应背景检测 - 自动识别并移除任意纯色背景（白色/黑色/蓝色/灰色等）
     4. 智能抠图 - 使用 GrabCut 算法，边缘平滑，支持半透明效果
     5. 生成完成后重置 tasks.json 为空模板
 
-    📋 背景处理规则：
+    背景处理规则：
     - background 和 illustration 类别：保留原始背景（不抠图）
     - 其他类别（角色、UI、道具等）：自动检测并移除背景色
 
-    🔧 智能尺寸优化：
+    智能尺寸优化：
     - 支持任意尺寸（如 128x128、1024x1024、4096x4096）
     - 自动选择最佳 API 尺寸（512-2048 范围）
     - 高质量 LANCZOS 缩放
@@ -49,25 +49,22 @@ def generate_game_asset(workspace_dir: str) -> str:
     [
       {
         "description": "图像描述（必填）",
-        "category": "char_portrait|char_sprite|sheet_char|ui_asset|effect|illustration|logo|prop|background|none（可选，默认 none）",
-        "style": "pixel|cartoon|realistic（可选，默认 cartoon）",
+        "category": "char_portrait|char_sprite|ui_asset|effect|illustration|logo|prop|background",
+        "style": "pixel|cartoon|realistic",
         "name": "文件名（不含后缀）",
-        "size": "宽x高（如 1024x512）",
-        "is_sheet": true|false（可选，是否为序列帧，默认 false）
+        "size": "宽x高（如 1024x512）"
       }
     ]
 
     category 说明：
     - char_portrait: 角色立绘（抠图）
     - char_sprite: 角色小人/游戏精灵（抠图）
-    - sheet_char: 角色序列帧/精灵动画（抠图，建议配合 sheet:true）
     - ui_asset: UI 组件（抠图）
     - effect: 特效元素（抠图）
     - logo: 标志/标题（抠图）
     - prop: 道具/物品（抠图）
     - illustration: 插画/CG（不抠图）
     - background: 背景/底图（不抠图）
-    - none: 无分类（抠图）
 
     style 说明：
     - pixel: 像素风格（8bit/16bit 复古游戏风格）
@@ -86,21 +83,21 @@ def generate_game_asset(workspace_dir: str) -> str:
         tasks_json_path = os.path.join(workspace_dir, "public", "tasks.json")
 
         if not os.path.exists(tasks_json_path):
-            return f"❌ 任务文件不存在: {tasks_json_path}"
+            return f"任务文件不存在: {tasks_json_path}"
 
         with open(tasks_json_path, "r", encoding="utf-8") as f:
             tasks_data = json.load(f)
 
         if not tasks_data or not isinstance(tasks_data, list):
-            return f"❌ 任务文件格式错误，应该是一个数组"
+            return f"任务文件格式错误，应该是一个数组"
 
         # 过滤掉空任务
         valid_tasks = [t for t in tasks_data if t.get("description") and t.get("description").strip()]
 
         if not valid_tasks:
-            return f"ℹ️ 没有有效的任务需要执行（description 为空）"
+            return f"ℹ没有有效的任务需要执行（description 为空）"
 
-        print(f"📋 读取到 {len(valid_tasks)} 个有效任务")
+        print(f"读取到 {len(valid_tasks)} 个有效任务")
 
         # 2. 基于工作目录设置输出路径
         assets_dir = os.path.join(workspace_dir, "public", "assets")
@@ -115,8 +112,6 @@ def generate_game_asset(workspace_dir: str) -> str:
             style = task_data.get("style", "cartoon").strip() or "cartoon"
             name = task_data.get("name", "").strip()
             size = task_data.get("size", "2048x2048").strip() or "2048x2048"
-            # 读取序列帧选项（兼容 is_sheet 和 sheet 两种写法）
-            is_sheet = task_data.get("is_sheet", task_data.get("sheet", False))
 
             # 如果没有提供名字，自动生成
             if not name:
@@ -133,12 +128,10 @@ def generate_game_asset(workspace_dir: str) -> str:
                 "category": category,
                 "style": style,
                 "size": size,
-                "need_white_background": not is_background,
-                "is_sheet": is_sheet
+                "need_white_background": not is_background
             })
 
-            sheet_label = "🎞️ 序列帧" if is_sheet else ""
-            print(f"  [{idx}] {name} - {category}/{style} {sheet_label}- {description[:50]}...")
+            print(f"  [{idx}] {name} - {category}/{style} - {description[:50]}...")
 
         # 4. 调用主程序生成图像
         result = engine.generate_images(engine_tasks, output_dir=assets_dir)
@@ -152,37 +145,30 @@ def generate_game_asset(workspace_dir: str) -> str:
                     "category": "",
                     "style": "",
                     "name": "",
-                    "size": "",
-                    "is_sheet": False
+                    "size": ""
                 }
             ]
             with open(tasks_json_path, "w", encoding="utf-8") as f:
                 json.dump(template, f, ensure_ascii=False, indent=2)
-            print(f"✅ 已重置任务文件为空模板: {tasks_json_path}")
+            print(f"已重置任务文件为空模板: {tasks_json_path}")
         except Exception as clear_error:
-            print(f"⚠️ 重置任务文件失败: {clear_error}")
+            print(f"重置任务文件失败: {clear_error}")
 
         # 6. 构建详细的返回消息
-        message = f"{'='*60}\n"
-        message += f"📊 批量生成完成！\n"
-        message += f"{'='*60}\n\n"
-        message += f"✅ 成功: {result['success_count']} 个\n"
-        message += f"❌ 失败: {result['fail_count']} 个\n"
-        message += f"📁 保存位置: {assets_dir}/\n"
+        message = f"批量生成完成！\n"
+        message += f"成功: {result['success_count']} 个\n"
+        message += f"失败: {result['fail_count']} 个\n"
+        message += f"保存位置: {assets_dir}/\n"
 
         # 添加错误详情
         if result.get('errors'):
-            message += f"\n{'='*60}\n"
-            message += f"❌ 错误详情:\n"
-            message += f"{'='*60}\n"
+            message += f"错误详情:\n"
             for error in result['errors']:
                 message += f"  • {error.get('name', '未知')}: {error.get('error', '未知错误')}\n"
 
         # 添加成功生成的图像列表
         if result['success_count'] > 0:
-            message += f"\n{'='*60}\n"
-            message += f"✅ 已生成的素材:\n"
-            message += f"{'='*60}\n"
+            message += f"已生成的素材:\n"
             for img_info in result.get('images', []):
                 if img_info:
                     message += f"  • {img_info.get('filename', '未知')}"
@@ -192,19 +178,17 @@ def generate_game_asset(workspace_dir: str) -> str:
                         message += f" (已抠图: {img_info.get('pixels_removed', 0):,} 像素)"
                     message += "\n"
 
-        message += f"\n{'='*60}\n"
-        message += f"💡 任务文件已重置为空模板，可以继续添加新任务\n"
-        message += f"{'='*60}"
+        message += f"任务文件已重置为空模板，可以继续添加新任务\n"
 
         return message
 
     except json.JSONDecodeError as e:
-        return f"❌ 任务文件 JSON 格式错误:\n{str(e)}"
+        return f"任务文件 JSON 格式错误:\n{str(e)}"
     except Exception as e:
         # 捕获详细的错误信息
         import traceback
         error_detail = traceback.format_exc()
-        return f"❌ 生成过程中发生错误:\n\n{str(e)}\n\n详细错误:\n{error_detail}"
+        return f"生成过程中发生错误:\n\n{str(e)}\n\n详细错误:\n{error_detail}"
 
 
 
