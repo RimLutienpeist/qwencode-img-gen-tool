@@ -4,6 +4,7 @@
 
 import os
 import json
+import logging
 from openai import OpenAI
 from dotenv import load_dotenv
 import requests
@@ -11,6 +12,12 @@ import time
 import numpy as np
 from PIL import Image as PILImage
 import cv2
+
+# 配置日志
+# logging.disable(logging.CRITICAL)
+
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
 
 load_dotenv()  # 从 .env 加载到环境变量
 
@@ -53,27 +60,36 @@ MODEL_SIZE_RANGES = {
 ART_STYLE = "cartoon"  # pixel / cartoon / realistic
 
 # 是否自动移除背景
-AUTO_REMOVE_BACKGROUND = False  # True=自动移除 / False=保持原样
+AUTO_REMOVE_BACKGROUND = True  # True=自动移除 / False=保持原样
+
+# 测试模式配置（仅用于 if __name__ == "__main__" 时）
+TEST_MODE = {
+    "enabled": True,  # True=测试模式（处理本地图像） / False=正常模式（API生成）
+    "input_directory": "../test/",  # 测试模式下读取图像的目录
+    "output_directory": "../test_output/",  # 测试模式下输出目录
+    "target_size": None,  # 测试模式下目标尺寸（None=保持原尺寸）
+}
 
 # 背景移除选项
 BACKGROUND_REMOVAL_CONFIG = {
     "skip_backgrounds": True,  # 是否跳过背景/插画类素材（background, illustration）
     "overwrite": True,  # 是否覆盖原文件（False则创建 _nobg 副本）
-    "tolerance": 15,  # 颜色容差（欧氏距离阈值，建议 30-50）
-    "threshold": 240,  # 白色阈值（0-255，用于判断是否为白色，仅在 auto_detect=False 时使用）
+    "tolerance": 5,  # 颜色容差（欧氏距离阈值，降低以保留前景白色）
+    "threshold": 250,  # 白色阈值（0-255，提高以只移除非常纯的白色）
     "algorithm": "grabcut",  # 算法选择: "simple" 或 "grabcut"
-    "grabcut_iterations": 10,  # GrabCut 迭代次数（1-10，数值越大效果越好但越慢）
+    "grabcut_iterations": 5,  # GrabCut 迭代次数（1-10，数值越大效果越好但越慢）
     "edge_feather": 1,  # 边缘羽化半径（像素，0 表示不羽化）
     "remove_color_spill": True,  # 是否移除颜色溢出（边缘色彩校正）
     "auto_detect_background": True,  # 启用自动检测背景色（支持黑/白/蓝/灰等任意纯色背景）
+    "use_edge_detection": True,  # 启用边缘检测辅助（保护前景中的背景色）
 }
 
 # ==================== 系统提示词 ====================
 
-# 系统提示词模板（从 game_asset_prompts.py 迁移）
+# 系统提示词模板
 SYSTEM_PROMPTS = {
     # 基础提示词
-    "base": "游戏素材，高质量，清晰，专业制作，PNG格式",
+    "base": "游戏素材，高质量，清晰，专业制作，PNG格式，避免在图像内部使用纯白色",
 
     # 风格提示词
     "pixel": "像素风格，8bit/16bit复古游戏风格，清晰的像素边界，游戏素材",
@@ -155,24 +171,24 @@ def load_tasks(config_file="tasks.json"):
         tasks = config.get('tasks', [])
 
         if not tasks:
-            print(f"警告: {config_file} 中的 tasks 数组为空")
-            print(f"请在配置文件中添加要生成的图像任务")
+            logger.warning(f"{config_file} 中的 tasks 数组为空")
+            logger.info(f"请在配置文件中添加要生成的图像任务")
             return []
 
-        print(f"从 {config_file} 加载了 {len(tasks)} 个任务")
+        logger.info(f"从 {config_file} 加载了 {len(tasks)} 个任务")
         return tasks
 
     except FileNotFoundError:
-        print(f"错误: 找不到配置文件 {config_file}")
-        print(f"请确保 {config_file} 文件存在于当前目录")
+        logger.error(f"找不到配置文件 {config_file}")
+        logger.info(f"请确保 {config_file} 文件存在于当前目录")
         return []
     except json.JSONDecodeError as e:
-        print(f"错误: {config_file} 格式错误")
-        print(f"   {e}")
+        logger.error(f"{config_file} 格式错误")
+        logger.info(f"   {e}")
         return []
     except Exception as e:
-        print(f"错误: 无法读取配置文件")
-        print(f"   {e}")
+        logger.error(f"无法读取配置文件")
+        logger.info(f"   {e}")
         return []
 
 
@@ -204,7 +220,7 @@ def calculate_api_size(target_size, model_name=None):
 
         # 获取模型配置
         if model_name not in MODEL_SIZE_RANGES:
-            print(f"⚠️  警告: 模型 {model_name} 未配置，使用默认范围")
+            logger.warning(f"⚠️  模型 {model_name} 未配置，使用默认范围")
             model_config = MODEL_SIZE_RANGES["doubao-seedream-3-0-t2i-250415"]
         else:
             model_config = MODEL_SIZE_RANGES[model_name]
@@ -267,7 +283,7 @@ def calculate_api_size(target_size, model_name=None):
         return api_size, scale_factor, need_resize
 
     except Exception as e:
-        print(f"尺寸计算失败: {e}")
+        logger.error(f"尺寸计算失败: {e}")
         return "1024x1024", 1.0, False
 
 
@@ -332,13 +348,13 @@ def resize_image(filepath, target_size, name, keep_aspect_ratio=True):
             final_width = new_width
             final_height = new_height
 
-            print(f"         按比例缩放: {orig_width}x{orig_height} → {final_width}x{final_height} (比例 {scale_ratio:.3f}x)")
+            logger.info(f"         按比例缩放: {orig_width}x{orig_height} → {final_width}x{final_height} (比例 {scale_ratio:.3f}x)")
 
         else:
             # 强制拉伸到目标尺寸（不保持比例）
             final_width = target_width
             final_height = target_height
-            print(f"         强制缩放: {orig_width}x{orig_height} → {final_width}x{final_height}")
+            logger.info(f"         强制缩放: {orig_width}x{orig_height} → {final_width}x{final_height}")
 
         # 使用高质量的重采样算法
         # LANCZOS 适合缩小，对放大也有不错的效果
@@ -350,7 +366,7 @@ def resize_image(filepath, target_size, name, keep_aspect_ratio=True):
         return True, original_size, (final_width, final_height)
 
     except Exception as e:
-        print(f"         图像缩放失败: {e}")
+        logger.error(f"         图像缩放失败: {e}")
         import traceback
         traceback.print_exc()
         return False, None, None
@@ -409,7 +425,7 @@ def detect_background_color(img, debug=False):
     is_pure = bg_std < 30
 
     if debug:
-        print(f"         背景检测: BGR={bg_color}, 标准差={bg_std:.1f}, 纯净度={'✓' if is_pure else '✗'}")
+        logger.debug(f"         背景检测: BGR={bg_color}, 标准差={bg_std:.1f}, 纯净度={'✓' if is_pure else '✗'}")
 
     return bg_color, bg_std, is_pure
 
@@ -523,7 +539,7 @@ def remove_white_background_simple(filepath, name, skip_backgrounds=True, overwr
         return True, pixels_removed
 
     except Exception as e:
-        print(f"         背景移除失败: {e}")
+        logger.error(f"         背景移除失败: {e}")
         import traceback
         traceback.print_exc()
         return False, 0
@@ -532,7 +548,7 @@ def remove_white_background_simple(filepath, name, skip_backgrounds=True, overwr
 def remove_white_background_grabcut(filepath, name, skip_backgrounds=True, overwrite=True,
                                     tolerance=40, threshold=200, category=None,
                                     iterations=5, edge_feather=3, remove_spill=True,
-                                    auto_detect=False):
+                                    auto_detect=True, use_edge_detection=False):
     """
     移除背景（GrabCut 算法 - 支持自适应背景色检测）
 
@@ -571,6 +587,59 @@ def remove_white_background_grabcut(filepath, name, skip_backgrounds=True, overw
         # 获取图像尺寸
         height, width = img.shape[:2]
 
+        # ==================== 步骤 0: 边缘检测辅助（可选）====================
+
+        # 使用边缘检测来辅助识别主体物体（从配置读取）
+        edge_mask = None
+        if use_edge_detection:
+            # 转换为灰度图
+            gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+
+            # Canny 边缘检测
+            edges = cv2.Canny(gray, 50, 150)
+
+            # 形态学闭运算（连接断裂的边缘）
+            kernel_edge = np.ones((3, 3), np.uint8)
+            edges_closed = cv2.morphologyEx(edges, cv2.MORPH_CLOSE, kernel_edge, iterations=2)
+
+            # 查找轮廓
+            contours, _ = cv2.findContours(edges_closed, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+            if contours:
+                # 过滤掉边缘轮廓（接近图像边界的轮廓）
+                valid_contours = []
+                margin = 5  # 边距阈值（像素）
+
+                for contour in contours:
+                    x, y, w, h = cv2.boundingRect(contour)
+                    # 检查是否接近图像边界
+                    is_edge_contour = (
+                        x < margin or
+                        y < margin or
+                        x + w > width - margin or
+                        y + h > height - margin
+                    )
+
+                    # 只保留不在边缘的轮廓
+                    if not is_edge_contour:
+                        valid_contours.append(contour)
+
+                if valid_contours:
+                    # 找到最大的有效轮廓（假设是主体物体）
+                    largest_contour = max(valid_contours, key=cv2.contourArea)
+
+                    # 创建边缘掩码（轮廓内部=255，外部=0）
+                    edge_mask = np.zeros((height, width), dtype=np.uint8)
+                    cv2.drawContours(edge_mask, [largest_contour], -1, 255, thickness=cv2.FILLED)
+
+                    contour_area = cv2.contourArea(largest_contour)
+                    image_area = height * width
+                    area_ratio = contour_area / image_area
+
+                    logger.info(f"         边缘检测: 找到主体轮廓，面积={contour_area:.0f}px² ({area_ratio*100:.1f}%)")
+                else:
+                    logger.info(f"         边缘检测: 未找到有效轮廓（所有轮廓都在边缘）")
+
         # ==================== 步骤 1: 颜色检测生成初步掩码 ====================
 
         # 提取 RGB 通道（OpenCV 使用 BGR 格式）
@@ -578,12 +647,12 @@ def remove_white_background_grabcut(filepath, name, skip_backgrounds=True, overw
 
         if auto_detect:
             # 模式 A: 自适应背景色检测
-            print(f"         使用自适应背景检测...")
+            logger.info(f"         使用自适应背景检测...")
             bg_color, bg_std, is_pure = detect_background_color(img, debug=True)
 
             # 如果背景不纯净，提示警告但继续处理
             if not is_pure:
-                print(f"         背景不够纯净（标准差={bg_std:.1f}），可能影响抠图效果")
+                logger.warning(f"         背景不够纯净（标准差={bg_std:.1f}），可能影响抠图效果")
 
             # 基于检测到的背景色生成掩码
             is_bg = is_background_color(img, bg_color, tolerance=tolerance)
@@ -620,8 +689,21 @@ def remove_white_background_grabcut(filepath, name, skip_backgrounds=True, overw
         # 3 = GC_PR_FGD (可能前景)
         mask = np.full((height, width), cv2.GC_PR_FGD, dtype=np.uint8)  # 默认为可能前景
 
-        # 明确的背景
+        # 明确的背景（颜色检测）
         mask[is_bg] = cv2.GC_BGD
+
+        # 如果有边缘检测结果，融合到掩码中
+        if edge_mask is not None:
+            # 边缘轮廓内部 + 颜色判断为背景 → 仍然保持为前景（避免误删）
+            # 这是关键：边缘内的白色不会被删除
+            inside_edge = (edge_mask == 255)
+            mask[inside_edge & is_bg] = cv2.GC_PR_FGD  # 轮廓内的"背景色"改为可能前景
+
+            # 边缘轮廓外部 + 颜色判断为前景 → 改为可能背景（避免误保留）
+            outside_edge = (edge_mask == 0)
+            mask[outside_edge & ~is_bg] = cv2.GC_PR_BGD
+
+            logger.info(f"         边缘检测: 已融合轮廓信息到掩码")
 
         # 腐蚀操作找出核心前景区域（避免边缘误判）
         kernel = np.ones((5, 5), np.uint8)
@@ -638,7 +720,7 @@ def remove_white_background_grabcut(filepath, name, skip_backgrounds=True, overw
         try:
             cv2.grabCut(img, mask, None, bgd_model, fgd_model, iterations, cv2.GC_INIT_WITH_MASK)
         except cv2.error as e:
-            print(f"         GrabCut 算法失败，回退到简单算法: {e}")
+            logger.warning(f"         GrabCut 算法失败，回退到简单算法: {e}")
             # 如果 GrabCut 失败，使用简单的颜色检测
             pass
 
@@ -727,7 +809,7 @@ def remove_white_background_grabcut(filepath, name, skip_backgrounds=True, overw
             original_size = f"{width}x{height}"
             cropped_size = f"{x_max - x_min + 1}x{y_max - y_min + 1}"
 
-            print(f"         裁剪透明边缘: {original_size} → {cropped_size}")
+            logger.info(f"         裁剪透明边缘: {original_size} → {cropped_size}")
         else:
             # 图像完全透明，保持原样
             pixels_removed = height * width
@@ -746,7 +828,7 @@ def remove_white_background_grabcut(filepath, name, skip_backgrounds=True, overw
         return True, pixels_removed
 
     except Exception as e:
-        print(f"         GrabCut 背景移除失败: {e}")
+        logger.error(f"         GrabCut 背景移除失败: {e}")
         import traceback
         traceback.print_exc()
         return False, 0
@@ -781,7 +863,7 @@ def remove_background(filepath, name, skip_backgrounds=True, overwrite=True,
             iterations=kwargs.get('grabcut_iterations', 5),
             edge_feather=kwargs.get('edge_feather', 3),
             remove_spill=kwargs.get('remove_color_spill', True),
-            auto_detect=kwargs.get('auto_detect_background', False)
+            auto_detect=kwargs.get('auto_detect_background', True)
         )
     else:  # algorithm == "simple"
         return remove_white_background_simple(
@@ -804,11 +886,11 @@ def generate_images(tasks, output_dir="./generated-images"):
     os.makedirs(output_dir, exist_ok=True)
     full_output_dir = output_dir
 
-    print(f"开始生成 {len(tasks)} 张图像...")
-    print(f"默认美术风格: {ART_STYLE}（可由任务参数覆盖）")
-    print(f"自动移除背景: {'开启' if AUTO_REMOVE_BACKGROUND else '关闭'}")
-    print(f"输出目录: {full_output_dir}")
-    print("="*80)
+    logger.info(f"开始生成 {len(tasks)} 张图像...")
+    logger.info(f"默认美术风格: {ART_STYLE}（可由任务参数覆盖）")
+    logger.info(f"自动移除背景: {'开启' if AUTO_REMOVE_BACKGROUND else '关闭'}")
+    logger.info(f"输出目录: {full_output_dir}")
+    logger.info("="*80)
 
     success_count = 0
     fail_count = 0
@@ -834,14 +916,14 @@ def generate_images(tasks, output_dir="./generated-images"):
             )
         else:
             error_msg = f"缺少 prompt 或 description"
-            print(f"[{idx}/{len(tasks)}] 跳过 {name} - {error_msg}")
+            logger.warning(f"[{idx}/{len(tasks)}] 跳过 {name} - {error_msg}")
             errors.append({"name": name, "error": error_msg})
             fail_count += 1
             continue
 
         if not prompt:
             error_msg = f"无效的提示词"
-            print(f"[{idx}/{len(tasks)}] 跳过 {name} - {error_msg}")
+            logger.warning(f"[{idx}/{len(tasks)}] 跳过 {name} - {error_msg}")
             errors.append({"name": name, "error": error_msg})
             fail_count += 1
             continue
@@ -849,22 +931,22 @@ def generate_images(tasks, output_dir="./generated-images"):
         # 获取目标图像尺寸
         target_size = task.get("size", "1024x1024")
 
-        # 获取模型名称（优先使用任务指定的模型，否则使用全局配置）
+        # 获取模型名称
         model_name = MODEL_NAME
 
         # 计算最佳 API 尺寸（根据模型自动适配）
         api_size, scale_factor, need_resize = calculate_api_size(target_size, model_name)
 
-        print(f"\n[{idx}/{len(tasks)}] 正在生成: {name}")
-        print(f"使用模型: {model_name}")
-        print(f"使用风格: {actual_style}")
-        print(f"目标尺寸: {target_size}")
-        print(f"API 生成尺寸: {api_size}")
+        logger.info(f"\n[{idx}/{len(tasks)}] 正在生成: {name}")
+        logger.info(f"使用模型: {model_name}")
+        logger.info(f"使用风格: {actual_style}")
+        logger.info(f"目标尺寸: {target_size}")
+        logger.info(f"API 生成尺寸: {api_size}")
         if need_resize:
-            print(f"缩放策略: {api_size} → {target_size} (缩放因子: {scale_factor:.2f}x)")
+            logger.info(f"缩放策略: {api_size} → {target_size} (缩放因子: {scale_factor:.2f}x)")
         else:
-            print(f"缩放策略: 直接使用目标尺寸，无需后处理")
-        print(f"提示词: {prompt[:100]}..." if len(prompt) > 100 else f"提示词: {prompt}")
+            logger.info(f"缩放策略: 直接使用目标尺寸，无需后处理")
+        logger.info(f"提示词: {prompt[:100]}..." if len(prompt) > 100 else f"提示词: {prompt}")
 
         try:
             # 调用豆包图像生成 API（使用智能计算的尺寸和指定模型）
@@ -890,14 +972,14 @@ def generate_images(tasks, output_dir="./generated-images"):
                 with open(filename, "wb") as f:
                     f.write(response.content)
 
-                print(f"成功保存: {filename}")
+                logger.info(f"成功保存: {filename}")
 
                 # 自动移除背景
                 background_removed = False
                 pixels_removed = 0
                 if AUTO_REMOVE_BACKGROUND:
                     algorithm = BACKGROUND_REMOVAL_CONFIG.get("algorithm", "grabcut")
-                    print(f"移除背景中 (算法: {algorithm})...")
+                    logger.info(f"移除背景中 (算法: {algorithm})...")
                     background_removed, pixels_removed = remove_background(
                         filename,
                         name,
@@ -910,29 +992,30 @@ def generate_images(tasks, output_dir="./generated-images"):
                         grabcut_iterations=BACKGROUND_REMOVAL_CONFIG.get("grabcut_iterations", 5),
                         edge_feather=BACKGROUND_REMOVAL_CONFIG.get("edge_feather", 1),
                         remove_color_spill=BACKGROUND_REMOVAL_CONFIG.get("remove_color_spill", True),
-                        auto_detect_background=BACKGROUND_REMOVAL_CONFIG.get("auto_detect_background", False)
+                        auto_detect_background=BACKGROUND_REMOVAL_CONFIG.get("auto_detect_background", True),
+                        use_edge_detection=BACKGROUND_REMOVAL_CONFIG.get("use_edge_detection", True)
                     )
                     if background_removed and pixels_removed > 0:
-                        print(f"背景已移除 (处理了 {pixels_removed:,} 个像素)")
+                        logger.info(f"背景已移除 (处理了 {pixels_removed:,} 个像素)")
                     elif background_removed and pixels_removed == 0:
-                        print(f"未检测到白色背景")
+                        logger.info(f"未检测到白色背景")
                     else:
                         # background_removed == False 说明跳过了（background 或 illustration）
-                        print(f"跳过抠图（背景/插画类素材）")
+                        logger.info(f"跳过抠图（背景/插画类素材）")
 
                 # 缩放图像到目标尺寸（保持比例）
                 resized = False
                 original_size = None
                 final_size = None
                 if need_resize:
-                    print(f"缩放图像: {api_size} → {target_size} (保持比例)...")
+                    logger.info(f"缩放图像: {api_size} → {target_size} (保持比例)...")
                     resized, original_size, final_size = resize_image(filename, target_size, name, keep_aspect_ratio=True)
                     if resized:
-                        print(f"图像已缩放: {original_size} → {final_size}")
+                        logger.info(f"图像已缩放: {original_size} → {final_size}")
                     else:
-                        print(f"图像缩放失败")
+                        logger.error(f"图像缩放失败")
                 else:
-                    print(f"尺寸已匹配，跳过缩放")
+                    logger.info(f"尺寸已匹配，跳过缩放")
                     resized = True
                     # 获取当前图像尺寸（可能已经被裁剪）
                     current_img = PILImage.open(filename)
@@ -959,22 +1042,22 @@ def generate_images(tasks, output_dir="./generated-images"):
 
             else:
                 error_msg = f"图片下载失败，状态码: {response.status_code}"
-                print(f"{error_msg}")
+                logger.error(f"{error_msg}")
                 errors.append({"name": name, "error": error_msg})
                 fail_count += 1
 
         except Exception as e:
             error_msg = f"{type(e).__name__}: {e}"
-            print(f"生成失败: {error_msg}")
+            logger.error(f"生成失败: {error_msg}")
             errors.append({"name": name, "error": error_msg})
             fail_count += 1
 
     # 输出统计信息
-    print("\n" + "="*80)
-    print(f"生成完成！")
-    print(f"成功: {success_count} 个")
-    print(f"失败: {fail_count} 个")
-    print(f"保存位置: {full_output_dir}/")
+    logger.info("\n" + "="*80)
+    logger.info(f"生成完成！")
+    logger.info(f"成功: {success_count} 个")
+    logger.info(f"失败: {fail_count} 个")
+    logger.info(f"保存位置: {full_output_dir}/")
 
     # 返回生成结果（供MCP服务器使用）
     return {
@@ -988,14 +1071,120 @@ def generate_images(tasks, output_dir="./generated-images"):
     }
 
 
+# ==================== 测试模式函数 ====================
+
+def test_process_local_images():
+    """
+    测试模式：处理本地目录下的图像（不调用API）
+    """
+    import glob
+    from pathlib import Path
+
+    input_dir = TEST_MODE.get("input_directory", "./input-images")
+    output_dir = TEST_MODE.get("output_directory", "./processed-images")
+    target_size = TEST_MODE.get("target_size")
+
+    # 创建输出目录
+    os.makedirs(output_dir, exist_ok=True)
+
+    # 查找所有图像文件
+    image_extensions = ['*.png', '*.jpg', '*.jpeg', '*.webp', '*.bmp']
+    image_files = []
+    for ext in image_extensions:
+        image_files.extend(glob.glob(os.path.join(input_dir, ext)))
+        image_files.extend(glob.glob(os.path.join(input_dir, ext.upper())))
+
+    if not image_files:
+        logger.error(f"未在 {input_dir} 目录下找到任何图像文件")
+        return
+
+    logger.info(f"测试模式 - 本地图像处理")
+    logger.info(f"输入目录: {input_dir}")
+    logger.info(f"找到 {len(image_files)} 张图像")
+    logger.info(f"自动移除背景: {'开启' if AUTO_REMOVE_BACKGROUND else '关闭'}")
+    logger.info(f"目标尺寸: {target_size if target_size else '保持原尺寸'}")
+    logger.info(f"输出目录: {output_dir}")
+    logger.info("="*80)
+
+    success_count = 0
+    fail_count = 0
+
+    for idx, filepath in enumerate(image_files, 1):
+        path_obj = Path(filepath)
+        name = path_obj.stem
+        extension = path_obj.suffix
+
+        logger.info(f"\n[{idx}/{len(image_files)}] 正在处理: {name}{extension}")
+
+        try:
+            # 复制到输出目录（转换为PNG）
+            output_filepath = os.path.join(output_dir, f"{name}.png")
+            img = PILImage.open(filepath)
+            original_size = img.size
+            img.save(output_filepath, 'PNG')
+            logger.info(f"已复制: {output_filepath}")
+
+            # 自动移除背景
+            if AUTO_REMOVE_BACKGROUND:
+                algorithm = BACKGROUND_REMOVAL_CONFIG.get("algorithm", "grabcut")
+                logger.info(f"移除背景中 (算法: {algorithm})...")
+                background_removed, pixels_removed = remove_background(
+                    output_filepath,
+                    name,
+                    BACKGROUND_REMOVAL_CONFIG["skip_backgrounds"],
+                    BACKGROUND_REMOVAL_CONFIG["overwrite"],
+                    BACKGROUND_REMOVAL_CONFIG["tolerance"],
+                    BACKGROUND_REMOVAL_CONFIG["threshold"],
+                    None,  # category 未知
+                    algorithm=algorithm,
+                    grabcut_iterations=BACKGROUND_REMOVAL_CONFIG.get("grabcut_iterations", 5),
+                    edge_feather=BACKGROUND_REMOVAL_CONFIG.get("edge_feather", 1),
+                    remove_color_spill=BACKGROUND_REMOVAL_CONFIG.get("remove_color_spill", True),
+                    auto_detect_background=BACKGROUND_REMOVAL_CONFIG.get("auto_detect_background", True),
+                    use_edge_detection=BACKGROUND_REMOVAL_CONFIG.get("use_edge_detection", True)
+                )
+                if background_removed and pixels_removed > 0:
+                    logger.info(f"背景已移除 (处理了 {pixels_removed:,} 个像素)")
+                elif background_removed and pixels_removed == 0:
+                    logger.info(f"未检测到背景")
+                else:
+                    logger.info(f"跳过抠图")
+
+            # 缩放到目标尺寸（如果指定）
+            if target_size:
+                logger.info(f"缩放图像到目标尺寸: {target_size}...")
+                resized, _, final_size = resize_image(output_filepath, target_size, name, keep_aspect_ratio=True)
+                if resized:
+                    logger.info(f"图像已缩放: {original_size} → {final_size}")
+                else:
+                    logger.error(f"图像缩放失败")
+
+            success_count += 1
+
+        except Exception as e:
+            logger.error(f"处理失败: {type(e).__name__}: {e}")
+            fail_count += 1
+
+    # 输出统计
+    logger.info("\n" + "="*80)
+    logger.info(f"处理完成！")
+    logger.info(f"成功: {success_count} 个")
+    logger.info(f"失败: {fail_count} 个")
+    logger.info(f"保存位置: {output_dir}/")
+
+
 # ==================== 主程序入口 ====================
 
 if __name__ == "__main__":
-    # 从配置文件加载任务
-    tasks = load_tasks("tasks.json")
-
-    if tasks:
-        generate_images(tasks)
+    # 检查是否为测试模式
+    if TEST_MODE.get("enabled", False):
+        test_process_local_images()
     else:
-        print("错误: 没有可执行的任务！")
-        print("请检查 tasks.json 文件并添加任务。")
+        # 正常模式：从配置文件加载任务并调用API生成
+        tasks = load_tasks("tasks.json")
+
+        if tasks:
+            generate_images(tasks)
+        else:
+            logger.error("错误: 没有可执行的任务！")
+            logger.info("请检查 tasks.json 文件并添加任务。")

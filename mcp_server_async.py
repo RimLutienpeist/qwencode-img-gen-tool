@@ -3,7 +3,14 @@ import sys
 import os
 import time
 import json
+import logging
 from mcp.server.fastmcp import FastMCP
+
+# 配置日志
+logging.disable(logging.CRITICAL)
+
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
 
 # 显式添加当前目录到 sys.path
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -14,8 +21,8 @@ try:
     import main_async as engine
     import main  # 保留原有的辅助函数
 except ImportError as e:
-    print(f"错误：无法导入模块 - {e}")
-    print("请确保 mcp_server_async.py 和 main_async.py 在同一目录下")
+    logger.error(f"错误：无法导入模块 - {e}")
+    logger.info("请确保 mcp_server_async.py 和 main_async.py 在同一目录下")
     sys.exit(1)
 
 # 初始化 MCP 服务器
@@ -82,9 +89,9 @@ def generate_game_asset(workspace_dir: str, max_concurrent: int = 5) -> str:
     """
 
     try:
-        print(f"MCP 工具启动（并发模式）")
-        print(f"工作目录: {workspace_dir}")
-        print(f"最大并发: {max_concurrent}")
+        logger.info(f"MCP 工具启动（并发模式）")
+        logger.info(f"工作目录: {workspace_dir}")
+        logger.info(f"最大并发: {max_concurrent}")
 
         # 1. 读取 tasks.json 文件
         tasks_json_path = os.path.join(workspace_dir, "public", "tasks.json")
@@ -104,7 +111,7 @@ def generate_game_asset(workspace_dir: str, max_concurrent: int = 5) -> str:
         if not valid_tasks:
             return f"ℹ 没有有效的任务需要执行（description 为空）"
 
-        print(f"读取到 {len(valid_tasks)} 个有效任务")
+        logger.info(f"读取到 {len(valid_tasks)} 个有效任务")
 
         # 2. 基于工作目录设置输出路径
         assets_dir = os.path.join(workspace_dir, "public", "assets")
@@ -138,7 +145,7 @@ def generate_game_asset(workspace_dir: str, max_concurrent: int = 5) -> str:
                 "need_white_background": not is_background
             })
 
-            print(f"  [{idx}] {name} - {category}/{style} - {description[:50]}...")
+            logger.info(f"  [{idx}] {name} - {category}/{style} - {description[:50]}...")
 
         # 4. 调用主程序生成图像（并发版本）
         result = engine.generate_images_concurrent(
@@ -160,9 +167,9 @@ def generate_game_asset(workspace_dir: str, max_concurrent: int = 5) -> str:
             ]
             with open(tasks_json_path, "w", encoding="utf-8") as f:
                 json.dump(template, f, ensure_ascii=False, indent=2)
-            print(f"已重置任务文件为空模板: {tasks_json_path}")
+            logger.info(f"已重置任务文件为空模板: {tasks_json_path}")
         except Exception as clear_error:
-            print(f"重置任务文件失败: {clear_error}")
+            logger.error(f"重置任务文件失败: {clear_error}")
 
         # 6. 构建详细的返回消息
         message = f"🚀 并发生成完成！\n\n"

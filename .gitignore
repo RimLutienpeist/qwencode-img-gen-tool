@@ -2,3 +2,6 @@ __pycache__
 .claude
 venv
 .env
+cat_with_bakcground
+cat_without_background
+QUICKSTART.md

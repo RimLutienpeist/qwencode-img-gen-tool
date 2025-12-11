@@ -14,6 +14,7 @@
 
 import os
 import json
+import logging
 from openai import OpenAI
 from dotenv import load_dotenv
 import asyncio
@@ -23,6 +24,12 @@ import numpy as np
 from PIL import Image as PILImage
 import cv2
 from typing import List, Dict, Tuple
+
+# 配置日志
+logging.disable(logging.CRITICAL)
+
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
 
 # 从原 main.py 导入所有函数和配置
 import main
@@ -96,14 +103,14 @@ async def generate_single_image_async(
         # 计算最佳 API 尺寸
         api_size, scale_factor, need_resize = calculate_api_size(target_size, model_name)
 
-        print(f"\n[{idx}/{total}] 正在生成: {name}")
-        print(f"  模型: {model_name}")
-        print(f"  风格: {actual_style}")
-        print(f"  目标尺寸: {target_size}")
-        print(f"  API 尺寸: {api_size}")
+        logger.info(f"\n[{idx}/{total}] 正在生成: {name}")
+        logger.info(f"  模型: {model_name}")
+        logger.info(f"  风格: {actual_style}")
+        logger.info(f"  目标尺寸: {target_size}")
+        logger.info(f"  API 尺寸: {api_size}")
         if need_resize:
-            print(f"  缩放策略: {api_size} → {target_size} ({scale_factor:.2f}x)")
-        print(f"  提示词: {prompt[:80]}..." if len(prompt) > 80 else f"  提示词: {prompt}")
+            logger.info(f"  缩放策略: {api_size} → {target_size} ({scale_factor:.2f}x)")
+        logger.info(f"  提示词: {prompt[:80]}..." if len(prompt) > 80 else f"  提示词: {prompt}")
 
         # ==================== 阶段 1: API 调用（异步） ====================
 
@@ -125,7 +132,7 @@ async def generate_single_image_async(
 
         img_url = imagesResponse.data[0].url
         api_time = time.time() - start_time
-        print(f"  ✓ API 响应完成 ({api_time:.1f}s)")
+        logger.info(f"  ✓ API 响应完成 ({api_time:.1f}s)")
 
         # ==================== 阶段 2: 图像下载（异步） ====================
 
@@ -141,7 +148,7 @@ async def generate_single_image_async(
             image_data = await response.read()
 
         download_time = time.time() - download_start
-        print(f"  ✓ 图像下载完成 ({download_time:.1f}s, {len(image_data) / 1024:.1f} KB)")
+        logger.info(f"  ✓ 图像下载完成 ({download_time:.1f}s, {len(image_data) / 1024:.1f} KB)")
 
         # ==================== 阶段 3: 保存图像 ====================
 
@@ -149,7 +156,7 @@ async def generate_single_image_async(
         with open(filename, "wb") as f:
             f.write(image_data)
 
-        print(f"  ✓ 保存: {filename}")
+        logger.info(f"  ✓ 保存: {filename}")
 
         # ==================== 阶段 4: 背景移除（同步，CPU 密集） ====================
 
@@ -159,7 +166,7 @@ async def generate_single_image_async(
         if AUTO_REMOVE_BACKGROUND:
             bg_start = time.time()
             algorithm = BACKGROUND_REMOVAL_CONFIG.get("algorithm", "grabcut")
-            print(f"  移除背景中 (算法: {algorithm})...")
+            logger.info(f"  移除背景中 (算法: {algorithm})...")
 
             # 在线程池中执行（避免阻塞事件循环）
             background_removed, pixels_removed = await loop.run_in_executor(
@@ -176,17 +183,18 @@ async def generate_single_image_async(
                     grabcut_iterations=BACKGROUND_REMOVAL_CONFIG.get("grabcut_iterations", 5),
                     edge_feather=BACKGROUND_REMOVAL_CONFIG.get("edge_feather", 1),
                     remove_color_spill=BACKGROUND_REMOVAL_CONFIG.get("remove_color_spill", True),
-                    auto_detect_background=BACKGROUND_REMOVAL_CONFIG.get("auto_detect_background", False)
+                    auto_detect_background=BACKGROUND_REMOVAL_CONFIG.get("auto_detect_background", False),
+                    use_edge_detection=BACKGROUND_REMOVAL_CONFIG.get("use_edge_detection", False)
                 )
             )
 
             bg_time = time.time() - bg_start
             if background_removed and pixels_removed > 0:
-                print(f"  ✓ 背景已移除 ({bg_time:.1f}s, {pixels_removed:,} 像素)")
+                logger.info(f"  ✓ 背景已移除 ({bg_time:.1f}s, {pixels_removed:,} 像素)")
             elif background_removed and pixels_removed == 0:
-                print(f"  • 未检测到背景")
+                logger.info(f"  • 未检测到背景")
             else:
-                print(f"  • 跳过抠图（背景/插画类）")
+                logger.info(f"  • 跳过抠图（背景/插画类）")
 
         # ==================== 阶段 5: 图像缩放（同步，CPU 密集） ====================
 
@@ -195,7 +203,7 @@ async def generate_single_image_async(
 
         if need_resize:
             resize_start = time.time()
-            print(f"  缩放图像: {api_size} → {target_size}...")
+            logger.info(f"  缩放图像: {api_size} → {target_size}...")
 
             resized, original_size, final_size = await loop.run_in_executor(
                 None,
@@ -204,9 +212,9 @@ async def generate_single_image_async(
 
             resize_time = time.time() - resize_start
             if resized:
-                print(f"  ✓ 图像已缩放 ({resize_time:.1f}s): {original_size} → {final_size}")
+                logger.info(f"  ✓ 图像已缩放 ({resize_time:.1f}s): {original_size} → {final_size}")
             else:
-                print(f"  ✗ 图像缩放失败")
+                logger.error(f"  ✗ 图像缩放失败")
         else:
             current_img = PILImage.open(filename)
             original_size = current_img.size
@@ -215,7 +223,7 @@ async def generate_single_image_async(
         # ==================== 完成 ====================
 
         total_time = time.time() - start_time
-        print(f"  ✓ 完成 (总耗时: {total_time:.1f}s)")
+        logger.info(f"  ✓ 完成 (总耗时: {total_time:.1f}s)")
 
         return {
             "success": True,
@@ -237,7 +245,7 @@ async def generate_single_image_async(
     except Exception as e:
         import traceback
         error_detail = traceback.format_exc()
-        print(f"  ✗ 生成失败: {type(e).__name__}: {e}")
+        logger.error(f"  ✗ 生成失败: {type(e).__name__}: {e}")
         return {
             "success": False,
             "name": name,
@@ -264,11 +272,11 @@ async def generate_images_async(tasks: List[Dict], output_dir: str = "./generate
     os.makedirs(output_dir, exist_ok=True)
     full_output_dir = output_dir
 
-    print(f"开始并发生成 {len(tasks)} 张图像 (最大并发: {max_concurrent})...")
-    print(f"默认美术风格: {ART_STYLE}")
-    print(f"自动移除背景: {'开启' if AUTO_REMOVE_BACKGROUND else '关闭'}")
-    print(f"输出目录: {full_output_dir}")
-    print("="*80)
+    logger.info(f"开始并发生成 {len(tasks)} 张图像 (最大并发: {max_concurrent})...")
+    logger.info(f"默认美术风格: {ART_STYLE}")
+    logger.info(f"自动移除背景: {'开启' if AUTO_REMOVE_BACKGROUND else '关闭'}")
+    logger.info(f"输出目录: {full_output_dir}")
+    logger.info("="*80)
 
     overall_start = time.time()
 
@@ -312,17 +320,17 @@ async def generate_images_async(tasks: List[Dict], output_dir: str = "./generate
 
     # ==================== 输出统计 ====================
 
-    print("\n" + "="*80)
-    print(f"并发生成完成！")
-    print(f"总耗时: {overall_time:.1f}s (平均: {overall_time / len(tasks):.1f}s/张)")
-    print(f"成功: {success_count} 个")
-    print(f"失败: {fail_count} 个")
-    print(f"保存位置: {full_output_dir}/")
+    logger.info("\n" + "="*80)
+    logger.info(f"并发生成完成！")
+    logger.info(f"总耗时: {overall_time:.1f}s (平均: {overall_time / len(tasks):.1f}s/张)")
+    logger.info(f"成功: {success_count} 个")
+    logger.info(f"失败: {fail_count} 个")
+    logger.info(f"保存位置: {full_output_dir}/")
 
     if success_count > 0:
         avg_time = sum(r.get("time", 0) for r in success_results) / success_count
-        print(f"平均单张耗时: {avg_time:.1f}s")
-        print(f"并发加速比: {(avg_time * len(tasks)) / overall_time:.1f}x")
+        logger.info(f"平均单张耗时: {avg_time:.1f}s")
+        logger.info(f"并发加速比: {(avg_time * len(tasks)) / overall_time:.1f}x")
 
     return {
         "success": success_count > 0,
@@ -394,9 +402,9 @@ if __name__ == "__main__":
         # 使用并发版本
         result = generate_images_concurrent(tasks, max_concurrent=5)
 
-        print(f"\n生成完成！")
-        print(f"  成功: {result['success_count']}")
-        print(f"  失败: {result['fail_count']}")
-        print(f"  总耗时: {result['total_time']:.1f}s")
+        logger.info(f"\n生成完成！")
+        logger.info(f"  成功: {result['success_count']}")
+        logger.info(f"  失败: {result['fail_count']}")
+        logger.info(f"  总耗时: {result['total_time']:.1f}s")
     else:
-        print("错误: 没有可执行的任务！")
+        logger.error("错误: 没有可执行的任务！")
