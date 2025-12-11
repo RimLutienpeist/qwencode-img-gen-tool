@@ -24,8 +24,8 @@ client = OpenAI(
 
 # ==================== 配置区域 ====================
 
-# 模型选择
-MODEL_NAME = "doubao-seedream-3-0-t2i-250415"  # 默认使用 3.0 模型
+
+MODEL_NAME = os.environ.get("ARK_MODEL", "")
 
 # 模型尺寸范围配置
 MODEL_SIZE_RANGES = {
@@ -59,8 +59,8 @@ AUTO_REMOVE_BACKGROUND = True  # True=自动移除 / False=保持原样
 BACKGROUND_REMOVAL_CONFIG = {
     "skip_backgrounds": True,  # 是否跳过背景/插画类素材（background, illustration）
     "overwrite": True,  # 是否覆盖原文件（False则创建 _nobg 副本）
-    "tolerance": 40,  # 颜色容差（欧氏距离阈值，建议 30-50）
-    "threshold": 250,  # 白色阈值（0-255，用于判断是否为白色，仅在 auto_detect=False 时使用）
+    "tolerance": 20,  # 颜色容差（欧氏距离阈值，建议 30-50）
+    "threshold": 240,  # 白色阈值（0-255，用于判断是否为白色，仅在 auto_detect=False 时使用）
     "algorithm": "grabcut",  # 算法选择: "simple" 或 "grabcut"
     "grabcut_iterations": 5,  # GrabCut 迭代次数（1-10，数值越大效果越好但越慢）
     "edge_feather": 1,  # 边缘羽化半径（像素，0 表示不羽化）
@@ -273,43 +273,81 @@ def calculate_api_size(target_size, model_name=None):
 
 # ==================== 图像缩放函数 ====================
 
-def resize_image(filepath, target_size, name):
+def resize_image(filepath, target_size, name, keep_aspect_ratio=True):
     """
     缩放图像到目标尺寸
 
     使用高质量的 LANCZOS 重采样算法，支持放大和缩小
+    支持保持比例缩放：最短边对齐目标最短边，长边按比例缩放
 
     Args:
         filepath: 图像文件路径
         target_size: 目标尺寸，格式为 "宽x高" (例如: "2048x2048")
         name: 素材名称
+        keep_aspect_ratio: 是否保持比例缩放（True=最短边对齐，False=强制拉伸）
 
     Returns:
-        tuple: (是否成功, 原始尺寸, 目标尺寸)
+        tuple: (是否成功, 原始尺寸, 最终尺寸)
     """
     try:
         # 解析目标尺寸
         if 'x' not in target_size.lower():
             return False, None, None
 
-        width, height = map(int, target_size.lower().split('x'))
+        target_width, target_height = map(int, target_size.lower().split('x'))
 
         # 打开图像
         img = PILImage.open(filepath)
         original_size = img.size
+        orig_width, orig_height = original_size
 
         # 如果尺寸已经匹配，跳过缩放
-        if img.size == (width, height):
-            return True, original_size, (width, height)
+        if img.size == (target_width, target_height):
+            return True, original_size, (target_width, target_height)
+
+        if keep_aspect_ratio:
+            # 按比例缩放：最短边对齐目标尺寸的最短边，长边按比例缩放
+
+            # 计算目标的最短边和最长边
+            target_min = min(target_width, target_height)
+            target_max = max(target_width, target_height)
+
+            # 计算原始图像的最短边和最长边
+            orig_min = min(orig_width, orig_height)
+            orig_max = max(orig_width, orig_height)
+
+            # 计算缩放比例：原始最短边 → 目标最短边
+            scale_ratio = target_min / orig_min
+
+            # 计算新的尺寸（保持原始比例）
+            new_width = int(orig_width * scale_ratio)
+            new_height = int(orig_height * scale_ratio)
+
+            # 确定目标尺寸是横向还是纵向
+            target_is_landscape = target_width >= target_height
+            orig_is_landscape = orig_width >= orig_height
+
+            # 如果原图和目标的方向不同，可能需要调整
+            # 但我们保持原图比例，所以直接使用计算出的尺寸
+            final_width = new_width
+            final_height = new_height
+
+            print(f"         按比例缩放: {orig_width}x{orig_height} → {final_width}x{final_height} (比例 {scale_ratio:.3f}x)")
+
+        else:
+            # 强制拉伸到目标尺寸（不保持比例）
+            final_width = target_width
+            final_height = target_height
+            print(f"         强制缩放: {orig_width}x{orig_height} → {final_width}x{final_height}")
 
         # 使用高质量的重采样算法
         # LANCZOS 适合缩小，对放大也有不错的效果
-        resized_img = img.resize((width, height), PILImage.Resampling.LANCZOS)
+        resized_img = img.resize((final_width, final_height), PILImage.Resampling.LANCZOS)
 
         # 保存缩放后的图像
         resized_img.save(filepath, 'PNG')
 
-        return True, original_size, (width, height)
+        return True, original_size, (final_width, final_height)
 
     except Exception as e:
         print(f"         图像缩放失败: {e}")
@@ -671,6 +709,31 @@ def remove_white_background_grabcut(filepath, name, skip_backgrounds=True, overw
         # 转换为 PIL 图像
         result_img = PILImage.fromarray(img_rgba, 'RGBA')
 
+        # ==================== 步骤 6: 裁剪透明边缘 ====================
+
+        # 找到非透明像素的边界框
+        # 获取所有非完全透明的像素位置（alpha > 0）
+        non_transparent = np.where(alpha_mask > 0)
+
+        if len(non_transparent[0]) > 0:
+            # 计算边界框
+            y_min, y_max = non_transparent[0].min(), non_transparent[0].max()
+            x_min, x_max = non_transparent[1].min(), non_transparent[1].max()
+
+            # 裁剪图像到边界框（保留内容，去除纯透明区域）
+            result_img = result_img.crop((x_min, y_min, x_max + 1, y_max + 1))
+
+            pixels_removed = int(np.sum(alpha_mask < 128))
+            original_size = f"{width}x{height}"
+            cropped_size = f"{x_max - x_min + 1}x{y_max - y_min + 1}"
+
+            print(f"         裁剪透明边缘: {original_size} → {cropped_size}")
+        else:
+            # 图像完全透明，保持原样
+            pixels_removed = height * width
+
+        # ==================== 步骤 7: 保存结果 ====================
+
         # 保存结果
         if overwrite:
             result_img.save(filepath, 'PNG')
@@ -680,8 +743,6 @@ def remove_white_background_grabcut(filepath, name, skip_backgrounds=True, overw
             nobg_path = path_obj.parent / f"{path_obj.stem}_nobg{path_obj.suffix}"
             result_img.save(str(nobg_path), 'PNG')
 
-        # 计算处理的像素数（透明像素）
-        pixels_removed = int(np.sum(alpha_mask < 128))
         return True, pixels_removed
 
     except Exception as e:
@@ -789,7 +850,7 @@ def generate_images(tasks, output_dir="./generated-images"):
         target_size = task.get("size", "1024x1024")
 
         # 获取模型名称（优先使用任务指定的模型，否则使用全局配置）
-        model_name = task.get("model", MODEL_NAME)
+        model_name = MODEL_NAME
 
         # 计算最佳 API 尺寸（根据模型自动适配）
         api_size, scale_factor, need_resize = calculate_api_size(target_size, model_name)
@@ -847,8 +908,9 @@ def generate_images(tasks, output_dir="./generated-images"):
                         task.get("category"),  # 传递 category 参数用于判断背景图
                         algorithm=algorithm,
                         grabcut_iterations=BACKGROUND_REMOVAL_CONFIG.get("grabcut_iterations", 5),
-                        edge_feather=BACKGROUND_REMOVAL_CONFIG.get("edge_feather", 3),
-                        remove_color_spill=BACKGROUND_REMOVAL_CONFIG.get("remove_color_spill", True)
+                        edge_feather=BACKGROUND_REMOVAL_CONFIG.get("edge_feather", 1),
+                        remove_color_spill=BACKGROUND_REMOVAL_CONFIG.get("remove_color_spill", True),
+                        auto_detect_background=BACKGROUND_REMOVAL_CONFIG.get("auto_detect_background", False)
                     )
                     if background_removed and pixels_removed > 0:
                         print(f"背景已移除 (处理了 {pixels_removed:,} 个像素)")
@@ -858,13 +920,13 @@ def generate_images(tasks, output_dir="./generated-images"):
                         # background_removed == False 说明跳过了（background 或 illustration）
                         print(f"跳过抠图（背景/插画类素材）")
 
-                # 缩放图像到目标尺寸（如需要）
+                # 缩放图像到目标尺寸（保持比例）
                 resized = False
                 original_size = None
                 final_size = None
                 if need_resize:
-                    print(f"缩放图像: {api_size} → {target_size}...")
-                    resized, original_size, final_size = resize_image(filename, target_size, name)
+                    print(f"缩放图像: {api_size} → {target_size} (保持比例)...")
+                    resized, original_size, final_size = resize_image(filename, target_size, name, keep_aspect_ratio=True)
                     if resized:
                         print(f"图像已缩放: {original_size} → {final_size}")
                     else:
@@ -872,10 +934,10 @@ def generate_images(tasks, output_dir="./generated-images"):
                 else:
                     print(f"尺寸已匹配，跳过缩放")
                     resized = True
-                    # 解析 API 尺寸作为原始尺寸
-                    api_w, api_h = map(int, api_size.lower().split('x'))
-                    original_size = (api_w, api_h)
-                    final_size = (api_w, api_h)
+                    # 获取当前图像尺寸（可能已经被裁剪）
+                    current_img = PILImage.open(filename)
+                    original_size = current_img.size
+                    final_size = current_img.size
 
                 # 记录图像信息（仅用于返回值）
                 images_info.append({
