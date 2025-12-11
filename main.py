@@ -53,16 +53,16 @@ MODEL_SIZE_RANGES = {
 ART_STYLE = "cartoon"  # pixel / cartoon / realistic
 
 # 是否自动移除背景
-AUTO_REMOVE_BACKGROUND = True  # True=自动移除 / False=保持原样
+AUTO_REMOVE_BACKGROUND = False  # True=自动移除 / False=保持原样
 
 # 背景移除选项
 BACKGROUND_REMOVAL_CONFIG = {
     "skip_backgrounds": True,  # 是否跳过背景/插画类素材（background, illustration）
     "overwrite": True,  # 是否覆盖原文件（False则创建 _nobg 副本）
-    "tolerance": 20,  # 颜色容差（欧氏距离阈值，建议 30-50）
+    "tolerance": 15,  # 颜色容差（欧氏距离阈值，建议 30-50）
     "threshold": 240,  # 白色阈值（0-255，用于判断是否为白色，仅在 auto_detect=False 时使用）
     "algorithm": "grabcut",  # 算法选择: "simple" 或 "grabcut"
-    "grabcut_iterations": 5,  # GrabCut 迭代次数（1-10，数值越大效果越好但越慢）
+    "grabcut_iterations": 10,  # GrabCut 迭代次数（1-10，数值越大效果越好但越慢）
     "edge_feather": 1,  # 边缘羽化半径（像素，0 表示不羽化）
     "remove_color_spill": True,  # 是否移除颜色溢出（边缘色彩校正）
     "auto_detect_background": True,  # 启用自动检测背景色（支持黑/白/蓝/灰等任意纯色背景）
