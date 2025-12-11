@@ -29,64 +29,57 @@ except ImportError as e:
 mcp = FastMCP("DoubaoAssetGenerator-Async")
 
 @mcp.tool()
-def generate_game_asset(workspace_dir: str, max_concurrent: int = 5) -> str:
+def generate_game_asset(workspace_dir: str) -> str:
     """
-    从 tasks.json 读取任务列表并并发批量生成游戏素材图像，智能移除背景。
+    Reads the task list from tasks.json and concurrently batch-generates game asset images, with intelligent background removal.
 
-    核心功能：
-    1. 读取 workspace_dir/public/tasks.json 文件获取任务列表
-    2. 并发生成多张图像 (保存到 workspace_dir/public/assets/)
-    3. 自适应背景检测 - 自动识别并移除任意纯色背景（白色/黑色/蓝色/灰色等）
-    4. 智能抠图 - 使用 GrabCut 算法，边缘平滑，支持半透明效果
-    5. 生成完成后重置 tasks.json 为空模板
+    Core Functions:
+    1. Read the task list from the workspace_dir/public/tasks.json file.
+    2. Concurrently generate multiple images (Save to workspace_dir/public/assets/).
+    3. Automatically identify and remove the background, exporting transparent PNGs (Background removal is conditional on the category).
+    4. Reset tasks.json to an empty template after generation is complete.
 
-    性能提升：
-    - 串行版本：3张图 30-90秒，5张图 50-150秒，10张图 100-300秒
-    - 并发版本：3张图 15-35秒，5张图 20-50秒，10张图 30-80秒
-    - 加速比：2-4倍（取决于任务数量和并发设置）
+    Background Processing Rules:
+    - 'background' and 'illustration' categories: Keep the original background (No removal).
+    - Other categories (Character, UI, Prop, etc.): Automatically detect and remove the background color.
 
-    背景处理规则：
-    - background 和 illustration 类别：保留原始背景（不抠图）
-    - 其他类别（角色、UI、道具等）：自动检测并移除背景色
-
-    智能尺寸优化：
-    - 支持任意尺寸（如 128x128、1024x1024、4096x4096）
-    - 自动选择最佳 API 尺寸（512-2048 范围）
-    - 高质量 LANCZOS 缩放
+    Intelligent Size Optimization:
+    - Supports arbitrary sizes (e.g., 128x128, 1024x1024, 4096x4096).
 
     Args:
-        workspace_dir: Qwen Code 的工作目录路径 (例如: "/home/user/phaser-frame-lite")
-        max_concurrent: 最大并发数（默认 5，建议 3-10，避免 API 限流）
+        workspace_dir: Path to the working directory of Qwen Code (e.g., "/home/user/phaser-frame-lite").
 
-    tasks.json 格式:
+    tasks.json Format:
     [
-      {
-        "description": "图像描述（必填）",
+        {
+        "description": "Image description (Required)",
         "category": "char_portrait|char_sprite|ui_asset|effect|illustration|logo|prop|background",
         "style": "pixel|cartoon|realistic",
-        "name": "文件名（不含后缀）",
-        "size": "宽x高（如 1024x512）"
-      }
+        "name": "Filename (without extension)",
+        "size": "Width x Height (e.g., 1024x512)"
+        }
     ]
 
-    category 说明：
-    - char_portrait: 角色立绘（抠图）
-    - char_sprite: 角色小人/游戏精灵（抠图）
-    - ui_asset: UI 组件（抠图）
-    - effect: 特效元素（抠图）
-    - logo: 标志/标题（抠图）
-    - prop: 道具/物品（抠图）
-    - illustration: 插画/CG（不抠图）
-    - background: 背景/底图（不抠图）
+    Category Descriptions:
+    - char_portrait: Character portrait (Background removal)
+    - char_sprite: Character sprite/game sprite (Background removal)
+    - ui_asset: UI component (Background removal)
+    - effect: Effect element (Background removal)
+    - logo: Logo/Title (Background removal)
+    - prop: Prop/Item (Background removal)
+    - illustration: Illustration/CG (No background removal)
+    - background: Background/Base map (No background removal)
 
-    style 说明：
-    - pixel: 像素风格（8bit/16bit 复古游戏风格）
-    - cartoon: 卡通风格（漫画渲染，明快色彩）
-    - realistic: 写实风格（3D 渲染，高细节）
+    Style Descriptions:
+    - pixel: Pixel style (8bit/16bit retro game style)
+    - cartoon: Cartoon style (Comic rendering, bright colors)
+    - realistic: Realistic style (3D rendering, high detail)
 
     Returns:
-        str: 批量生成结果报告，包含成功/失败数量、耗时统计、文件列表、错误详情等
+        str: Batch generation result report, including success/failure count, time statistics, file list, and error details.
     """
+    
+    max_concurrent = 5
 
     try:
         logger.info(f"MCP 工具启动（并发模式）")

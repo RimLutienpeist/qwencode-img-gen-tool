@@ -64,10 +64,12 @@ AUTO_REMOVE_BACKGROUND = True  # True=自动移除 / False=保持原样
 
 # 测试模式配置（仅用于 if __name__ == "__main__" 时）
 TEST_MODE = {
-    "enabled": True,  # True=测试模式（处理本地图像） / False=正常模式（API生成）
-    "input_directory": "../test/",  # 测试模式下读取图像的目录
-    "output_directory": "../test_output/",  # 测试模式下输出目录
-    "target_size": None,  # 测试模式下目标尺寸（None=保持原尺寸）
+    "enabled": True,  # True=测试模式 / False=正常模式
+    "use_api": True,  # True=使用API生成图像 / False=处理本地图像
+    "tasks_config": "../test/tasks.json",  # tasks.json 配置文件路径（use_api=True时使用）
+    "input_directory": "../test/",  # 本地图像目录（use_api=False时使用）
+    "output_directory": "../test_output/",  # 输出目录
+    "target_size": None,  # 目标尺寸（None=保持原尺寸）
 }
 
 # 背景移除选项
@@ -590,28 +592,53 @@ def remove_white_background_grabcut(filepath, name, skip_backgrounds=True, overw
         # ==================== 步骤 0: 边缘检测辅助（可选）====================
 
         # 使用边缘检测来辅助识别主体物体（从配置读取）
-        edge_mask = None
+        subject_mask = None  # 主体掩码：完全确定的前景区域
+
         if use_edge_detection:
+            logger.info(f"         使用边缘检测识别图像主体...")
+
             # 转换为灰度图
             gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
 
-            # Canny 边缘检测
-            edges = cv2.Canny(gray, 50, 150)
+            # 方法1: Canny 边缘检测
+            edges = cv2.Canny(gray, 30, 100)  # 降低阈值，更敏感
 
             # 形态学闭运算（连接断裂的边缘）
-            kernel_edge = np.ones((3, 3), np.uint8)
-            edges_closed = cv2.morphologyEx(edges, cv2.MORPH_CLOSE, kernel_edge, iterations=2)
+            kernel_close = np.ones((5, 5), np.uint8)
+            edges_closed = cv2.morphologyEx(edges, cv2.MORPH_CLOSE, kernel_close, iterations=3)
+
+            # 方法2: 自适应阈值（辅助检测）
+            adaptive_thresh = cv2.adaptiveThreshold(
+                gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV, 11, 2
+            )
+
+            # 方法3: Otsu阈值
+            _, otsu_thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+
+            # 融合三种方法的结果
+            combined_edges = cv2.bitwise_or(edges_closed, adaptive_thresh)
+            combined_edges = cv2.bitwise_or(combined_edges, otsu_thresh)
+
+            # 形态学操作：填充小孔洞
+            kernel_fill = np.ones((7, 7), np.uint8)
+            combined_edges = cv2.morphologyEx(combined_edges, cv2.MORPH_CLOSE, kernel_fill, iterations=2)
 
             # 查找轮廓
-            contours, _ = cv2.findContours(edges_closed, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            contours, _ = cv2.findContours(combined_edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
             if contours:
-                # 过滤掉边缘轮廓（接近图像边界的轮廓）
+                # 计算每个轮廓的特征
                 valid_contours = []
-                margin = 5  # 边距阈值（像素）
+                margin = 10  # 边距阈值（像素）
+                min_area = (width * height) * 0.01  # 最小面积：图像的1%
 
                 for contour in contours:
+                    area = cv2.contourArea(contour)
+                    if area < min_area:
+                        continue  # 太小的轮廓忽略
+
                     x, y, w, h = cv2.boundingRect(contour)
+
                     # 检查是否接近图像边界
                     is_edge_contour = (
                         x < margin or
@@ -620,25 +647,42 @@ def remove_white_background_grabcut(filepath, name, skip_backgrounds=True, overw
                         y + h > height - margin
                     )
 
-                    # 只保留不在边缘的轮廓
-                    if not is_edge_contour:
-                        valid_contours.append(contour)
+                    # 计算轮廓的紧密度（周长^2 / 面积，圆形约为12.57）
+                    perimeter = cv2.arcLength(contour, True)
+                    compactness = (perimeter ** 2) / area if area > 0 else float('inf')
+
+                    # 只保留不在边缘的轮廓，且紧密度合理
+                    if not is_edge_contour and compactness < 100:
+                        valid_contours.append((contour, area))
 
                 if valid_contours:
-                    # 找到最大的有效轮廓（假设是主体物体）
-                    largest_contour = max(valid_contours, key=cv2.contourArea)
+                    # 找到面积最大的有效轮廓（假设是主体物体）
+                    largest_contour, largest_area = max(valid_contours, key=lambda x: x[1])
 
-                    # 创建边缘掩码（轮廓内部=255，外部=0）
-                    edge_mask = np.zeros((height, width), dtype=np.uint8)
-                    cv2.drawContours(edge_mask, [largest_contour], -1, 255, thickness=cv2.FILLED)
+                    # 创建主体掩码（轮廓内部=1，外部=0）
+                    subject_mask = np.zeros((height, width), dtype=np.uint8)
+                    cv2.drawContours(subject_mask, [largest_contour], -1, 1, thickness=cv2.FILLED)
 
-                    contour_area = cv2.contourArea(largest_contour)
+                    # 改进：使用更温和的腐蚀（只腐蚀2-5像素）
+                    # 根据图像大小动态调整腐蚀核大小
+                    erode_size = max(2, min(5, int(min(width, height) * 0.01)))
+                    kernel_erode = np.ones((erode_size, erode_size), np.uint8)
+                    subject_core = cv2.erode(subject_mask, kernel_erode, iterations=1)
+
+                    contour_area = largest_area
+                    core_area = np.sum(subject_core)
                     image_area = height * width
                     area_ratio = contour_area / image_area
 
                     logger.info(f"         边缘检测: 找到主体轮廓，面积={contour_area:.0f}px² ({area_ratio*100:.1f}%)")
+                    logger.info(f"         边缘检测: 腐蚀核大小={erode_size}x{erode_size}，核心区域={core_area:.0f}px² ({core_area/image_area*100:.1f}%)")
+
+                    # 将整个主体轮廓作为掩码（不只是核心区域）
+                    subject_mask = subject_mask.astype(bool)
                 else:
-                    logger.info(f"         边缘检测: 未找到有效轮廓（所有轮廓都在边缘）")
+                    logger.info(f"         边缘检测: 未找到有效轮廓")
+            else:
+                logger.info(f"         边缘检测: 未检测到任何轮廓")
 
         # ==================== 步骤 1: 颜色检测生成初步掩码 ====================
 
@@ -692,23 +736,26 @@ def remove_white_background_grabcut(filepath, name, skip_backgrounds=True, overw
         # 明确的背景（颜色检测）
         mask[is_bg] = cv2.GC_BGD
 
-        # 如果有边缘检测结果，融合到掩码中
-        if edge_mask is not None:
-            # 边缘轮廓内部 + 颜色判断为背景 → 仍然保持为前景（避免误删）
-            # 这是关键：边缘内的白色不会被删除
-            inside_edge = (edge_mask == 255)
-            mask[inside_edge & is_bg] = cv2.GC_PR_FGD  # 轮廓内的"背景色"改为可能前景
+        # ==================== 关键改进：主体区域强制前景 ====================
+        # 如果有主体检测结果，将主体内部的所有像素强制标记为前景
+        if subject_mask is not None:
+            # 主体轮廓内的所有像素（包括白色）都标记为确定前景
+            mask[subject_mask] = cv2.GC_FGD
 
-            # 边缘轮廓外部 + 颜色判断为前景 → 改为可能背景（避免误保留）
-            outside_edge = (edge_mask == 0)
-            mask[outside_edge & ~is_bg] = cv2.GC_PR_BGD
+            # 主体外部的背景色区域标记为确定背景
+            mask[~subject_mask & is_bg] = cv2.GC_BGD
 
-            logger.info(f"         边缘检测: 已融合轮廓信息到掩码")
+            protected_pixels = np.sum(subject_mask)
+            white_in_subject = np.sum(subject_mask & is_bg)
+            logger.info(f"         主体保护: 主体内部{protected_pixels:,}个像素标记为前景")
+            logger.info(f"         主体保护: 其中{white_in_subject:,}个白色像素被保护（不会被移除）")
 
         # 腐蚀操作找出核心前景区域（避免边缘误判）
-        kernel = np.ones((5, 5), np.uint8)
-        is_definite_fg = cv2.erode(is_definite_fg.astype(np.uint8), kernel, iterations=1).astype(bool)
-        mask[is_definite_fg] = cv2.GC_FGD
+        # 注意：只对非主体区域应用腐蚀，主体区域已经被保护
+        if subject_mask is None:
+            kernel = np.ones((5, 5), np.uint8)
+            is_definite_fg = cv2.erode(is_definite_fg.astype(np.uint8), kernel, iterations=1).astype(bool)
+            mask[is_definite_fg] = cv2.GC_FGD
 
         # ==================== 步骤 2: GrabCut 迭代优化 ====================
 
@@ -727,6 +774,11 @@ def remove_white_background_grabcut(filepath, name, skip_backgrounds=True, overw
         # 生成二值掩码（前景 = 1，背景 = 0）
         # mask 的值：0,2 表示背景，1,3 表示前景
         binary_mask = np.where((mask == cv2.GC_FGD) | (mask == cv2.GC_PR_FGD), 1, 0).astype(np.uint8)
+
+        # 检查主体区域是否被保留
+        if subject_mask is not None:
+            subject_preserved = np.sum(binary_mask[subject_mask]) / np.sum(subject_mask)
+            logger.info(f"         GrabCut完成: 主体区域保留率={subject_preserved*100:.1f}%")
 
         # ==================== 步骤 3: 边缘羽化 ====================
 
@@ -1178,7 +1230,20 @@ def test_process_local_images():
 if __name__ == "__main__":
     # 检查是否为测试模式
     if TEST_MODE.get("enabled", False):
-        test_process_local_images()
+        # 测试模式
+        if TEST_MODE.get("use_api", False):
+            # 使用API生成图像
+            tasks_config = TEST_MODE.get("tasks_config", "tasks.json")
+            tasks = load_tasks(tasks_config)
+
+            if tasks:
+                output_dir = TEST_MODE.get("output_directory", "./generated-images")
+                generate_images(tasks, output_dir=output_dir)
+            else:
+                logger.error(f"错误: 无法从 {tasks_config} 加载任务！")
+        else:
+            # 处理本地图像
+            test_process_local_images()
     else:
         # 正常模式：从配置文件加载任务并调用API生成
         tasks = load_tasks("tasks.json")
