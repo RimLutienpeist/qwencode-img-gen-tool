@@ -55,6 +55,7 @@ def generate_game_asset(workspace_dir: str) -> str:
         "description": "Image description (Required)",
         "category": "char_portrait|char_sprite|ui_asset|effect|illustration|logo|prop|background",
         "style": "pixel|cartoon|realistic",
+        "viewpoint": "front|back|side|top|isometric|perspective|three_quarter (Optional)",
         "name": "Filename (without extension)",
         "size": "Width x Height (e.g., 1024x512)"
         }
@@ -74,6 +75,15 @@ def generate_game_asset(workspace_dir: str) -> str:
     - pixel: Pixel style (8bit/16bit retro game style)
     - cartoon: Cartoon style (Comic rendering, bright colors)
     - realistic: Realistic style (3D rendering, high detail)
+
+    Viewpoint Descriptions (Optional):
+    - front: Front view (正面视角)
+    - back: Back view (背面视角)
+    - side: Side view (侧面视角)
+    - top: Top-down view (俯视视角)
+    - isometric: Isometric view (等轴测视角)
+    - perspective: Perspective view (透视视角)
+    - three_quarter: Three-quarter view (四分之三视角)
 
     Returns:
         str: Batch generation result report, including success/failure count, time statistics, file list, and error details.
@@ -117,6 +127,7 @@ def generate_game_asset(workspace_dir: str) -> str:
             description = task_data.get("description", "").strip()
             category = task_data.get("category", "none").strip() or "none"
             style = task_data.get("style", "cartoon").strip() or "cartoon"
+            viewpoint = task_data.get("viewpoint", "").strip() or None  # 获取视角参数
             name = task_data.get("name", "").strip()
             size = task_data.get("size", "2048x2048").strip() or "2048x2048"
 
@@ -134,11 +145,14 @@ def generate_game_asset(workspace_dir: str) -> str:
                 "description": description,
                 "category": category,
                 "style": style,
+                "viewpoint": viewpoint,  # 添加视角参数
                 "size": size,
                 "need_white_background": not is_background
             })
 
-            logger.info(f"  [{idx}] {name} - {category}/{style} - {description[:50]}...")
+            # 日志中包含视角信息
+            viewpoint_info = f" (视角: {viewpoint})" if viewpoint else ""
+            logger.info(f"  [{idx}] {name} - {category}/{style}{viewpoint_info} - {description[:50]}...")
 
         # 4. 调用主程序生成图像（并发版本）
         result = engine.generate_images_concurrent(
@@ -154,6 +168,7 @@ def generate_game_asset(workspace_dir: str) -> str:
                     "description": "",
                     "category": "",
                     "style": "",
+                    "viewpoint": "",
                     "name": "",
                     "size": ""
                 }

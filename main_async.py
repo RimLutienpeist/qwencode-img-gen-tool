@@ -75,6 +75,7 @@ async def generate_single_image_async(
         dict: 生成结果
     """
     name = task["name"]
+    viewpoint = task.get("viewpoint")  # 获取视角参数
 
     try:
         # 构建提示词
@@ -87,6 +88,7 @@ async def generate_single_image_async(
                 description=task["description"],
                 category=task.get("category"),
                 style=actual_style,
+                viewpoint=viewpoint,  # 传入视角参数
                 need_white_background=task.get("need_white_background", True)
             )
         else:
@@ -103,7 +105,14 @@ async def generate_single_image_async(
         # 计算最佳 API 尺寸
         api_size, scale_factor, need_resize = calculate_api_size(target_size, model_name)
 
-        logger.info(f"\n[{idx}/{total}] 正在生成: {name}")
+        # 构建文件名（如果有视角，加入文件名）
+        if viewpoint:
+            final_name = f"{name}_{viewpoint}"
+            logger.info(f"\n[{idx}/{total}] 正在生成: {name} (视角: {viewpoint})")
+        else:
+            final_name = name
+            logger.info(f"\n[{idx}/{total}] 正在生成: {name}")
+
         logger.info(f"  模型: {model_name}")
         logger.info(f"  风格: {actual_style}")
         logger.info(f"  目标尺寸: {target_size}")
@@ -152,7 +161,7 @@ async def generate_single_image_async(
 
         # ==================== 阶段 3: 保存图像 ====================
 
-        filename = f"{output_dir}/{name}.png"
+        filename = f"{output_dir}/{final_name}.png"
         with open(filename, "wb") as f:
             f.write(image_data)
 
@@ -183,8 +192,8 @@ async def generate_single_image_async(
                     grabcut_iterations=BACKGROUND_REMOVAL_CONFIG.get("grabcut_iterations", 5),
                     edge_feather=BACKGROUND_REMOVAL_CONFIG.get("edge_feather", 1),
                     remove_color_spill=BACKGROUND_REMOVAL_CONFIG.get("remove_color_spill", True),
-                    auto_detect_background=BACKGROUND_REMOVAL_CONFIG.get("auto_detect_background", False),
-                    use_edge_detection=BACKGROUND_REMOVAL_CONFIG.get("use_edge_detection", False)
+                    auto_detect_background=BACKGROUND_REMOVAL_CONFIG.get("auto_detect_background", True),
+                    use_edge_detection=BACKGROUND_REMOVAL_CONFIG.get("use_edge_detection", True)
                 )
             )
 
@@ -228,7 +237,8 @@ async def generate_single_image_async(
         return {
             "success": True,
             "name": name,
-            "filename": f"{name}.png",
+            "filename": f"{final_name}.png",
+            "viewpoint": viewpoint,  # 添加视角信息
             "prompt": prompt,
             "style": actual_style,
             "target_size": target_size,

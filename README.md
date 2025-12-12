@@ -160,6 +160,7 @@ qwen code 会在项目的 `public/tasks.json` 文件中填写任务，例如：
     "description": "一个手持火焰剑的红发女战士", 	# 会用做prompt的主体部分
     "category": "char_portrait",				# 不同类别会附加不同的类别提示词
     "style": "cartoon",							# 不同风格会附加不同的风格提示词
+    "viewpoint": "front",						# 视角（可选）
     "name": "warrior_portrait",					# 图像命名
     "size": "2048x2048"							# 图像长宽
   },
@@ -207,6 +208,7 @@ qwen code 会在项目的 `public/tasks.json` 文件中填写任务，例如：
     "description": "图像描述",
     "category": "素材分类",
     "style": "美术风格",
+    "viewpoint": "视角",
     "name": "文件名",
     "size": "图像尺寸"
   }
@@ -220,6 +222,7 @@ qwen code 会在项目的 `public/tasks.json` 文件中填写任务，例如：
 | `description` | ✅ 必填  | 无              | 图像的详细描述，如 "一个手持火焰剑的红发女战士" |
 | `category`    | ❌ 可选  | `"none"`      | 素材分类，影响系统提示词和背景颜色              |
 | `style`       | ❌ 可选  | `"cartoon"`   | 美术风格                                        |
+| `viewpoint`   | ❌ 可选  | 无              | 图像视角（如 front/side/top 等）                |
 | `name`        | ❌ 可选  | 自动生成        | 保存的文件名（不含 .png 后缀）                  |
 | `size`        | ❌ 可选  | `"2048x2048"` | 图像尺寸                                        |
 | `is_sheet`    | ❌ 可选  | `false`       | 是否为序列帧动画（true/false）                  |
@@ -262,6 +265,71 @@ qwen code 会在项目的 `public/tasks.json` 文件中填写任务，例如：
 | `pixel`     | 像素风 | 像素风格，8bit/16bit 复古游戏风格，清晰的像素边界 |
 | `cartoon`   | 卡通风 | 漫画风格，卡通渲染，cel-shading，明快色彩         |
 | `realistic` | 写实风 | 写实风格，3D 渲染，高细节，真实质感               |
+
+### viewpoint（视角）
+
+**说明：** 控制图像的视角/观察角度（可选参数）
+
+**支持的视角：**
+
+| 值              | 说明           | 系统提示词                             | 适用场景                        |
+| --------------- | -------------- | -------------------------------------- | ------------------------------- |
+| `front`       | 正面视角       | 正面视角，front view，正面朝向         | 角色正面、UI 图标               |
+| `back`        | 背面视角       | 背面视角，back view，背面朝向          | 角色背面、后视图                |
+| `side`        | 侧面视角       | 侧面视角，side view，侧面朝向          | 角色侧面、横版游戏              |
+| `top`         | 俯视视角       | 俯视视角，top-down view，从上往下看    | 俯视游戏、地图、建筑            |
+| `isometric`   | 等轴测视角     | 等轴测视角，isometric view，45度角俯视 | 模拟经营、策略游戏              |
+| `perspective` | 透视视角       | 透视视角，perspective view，三点透视   | 3D 场景、建筑、环境             |
+| `three_quarter` | 四分之三视角 | 四分之三视角，three-quarter view，斜侧面 | 3D 角色、立体感强的物体         |
+
+**使用说明：**
+- 如果不指定 `viewpoint`，则不添加视角提示词
+- 指定视角后，会自动加入文件名（例如：`warrior_front.png`）
+- 视角提示词会插入到 prompt 中，影响图像生成结果
+
+**示例：**
+```json
+{
+  "description": "勇者角色，手持盾牌",
+  "category": "char_portrait",
+  "style": "cartoon",
+  "viewpoint": "front",
+  "name": "hero",
+  "size": "1024x1024"
+}
+```
+生成的文件名为：`hero_front.png`
+
+**多视角生成示例：**
+```json
+[
+  {
+    "description": "骑士角色",
+    "category": "char_sprite",
+    "style": "pixel",
+    "viewpoint": "front",
+    "name": "knight",
+    "size": "512x512"
+  },
+  {
+    "description": "骑士角色",
+    "category": "char_sprite",
+    "style": "pixel",
+    "viewpoint": "back",
+    "name": "knight",
+    "size": "512x512"
+  },
+  {
+    "description": "骑士角色",
+    "category": "char_sprite",
+    "style": "pixel",
+    "viewpoint": "side",
+    "name": "knight",
+    "size": "512x512"
+  }
+]
+```
+生成的文件：`knight_front.png`、`knight_back.png`、`knight_side.png`
 
 ### is_sheet（序列帧选项）
 
@@ -668,6 +736,7 @@ pip install openai python-dotenv pillow numpy requests mcp
     "description": "一个手持火焰剑的红发女战士，全身立绘",
     "category": "char_portrait",
     "style": "cartoon",
+    "viewpoint": "front",
     "name": "warrior_portrait",
     "size": "2048x2048"
   },
@@ -675,6 +744,7 @@ pip install openai python-dotenv pillow numpy requests mcp
     "description": "Q版矮人角色，适合游戏场景使用",
     "category": "char_sprite",
     "style": "pixel",
+    "viewpoint": "side",
     "name": "dwarf_sprite",
     "size": "512x512"
   },
@@ -690,6 +760,7 @@ pip install openai python-dotenv pillow numpy requests mcp
     "description": "生命值显示的红色心形图标",
     "category": "ui_asset",
     "style": "cartoon",
+    "viewpoint": "front",
     "name": "health_icon",
     "size": "256x256"
   },
@@ -705,6 +776,7 @@ pip install openai python-dotenv pillow numpy requests mcp
     "description": "金币道具，闪闪发光",
     "category": "prop",
     "style": "cartoon",
+    "viewpoint": "isometric",
     "name": "gold_coin",
     "size": "1024x1024"
   },
@@ -712,6 +784,7 @@ pip install openai python-dotenv pillow numpy requests mcp
     "description": "中世纪城堡大厅的背景图",
     "category": "background",
     "style": "realistic",
+    "viewpoint": "perspective",
     "name": "castle_hall_bg",
     "size": "1920x1080"
   },

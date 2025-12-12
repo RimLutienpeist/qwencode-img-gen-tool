@@ -65,7 +65,7 @@ AUTO_REMOVE_BACKGROUND = True  # True=自动移除 / False=保持原样
 # 测试模式配置（仅用于 if __name__ == "__main__" 时）
 TEST_MODE = {
     "enabled": True,  # True=测试模式 / False=正常模式
-    "use_api": True,  # True=使用API生成图像 / False=处理本地图像
+    "use_api": False,  # True=使用API生成图像 / False=处理本地图像
     "tasks_config": "../test/tasks.json",  # tasks.json 配置文件路径（use_api=True时使用）
     "input_directory": "../test/",  # 本地图像目录（use_api=False时使用）
     "output_directory": "../test_output/",  # 输出目录
@@ -110,10 +110,19 @@ SYSTEM_PROMPTS = {
 
     # 纯白背景提示词（会根据need_white_background动态添加）
     "white_background": "纯白色背景，纯白底色，plain white background，solid white backdrop",
+
+    # 视角提示词（viewpoint）
+    "front": "正面视角，front view，正面朝向",
+    "back": "背面视角，back view，背面朝向",
+    "side": "侧面视角，side view，侧面朝向",
+    "top": "俯视视角，top-down view，从上往下看",
+    "isometric": "等轴测视角，isometric view，45度角俯视",
+    "perspective": "透视视角，perspective view，三点透视",
+    "three_quarter": "四分之三视角，three-quarter view，斜侧面",
 }
 
 
-def build_prompt(description, category=None, style=None, need_white_background=True):
+def build_prompt(description, category=None, style=None, viewpoint=None, need_white_background=True):
     """
     构建完整提示词
 
@@ -121,6 +130,7 @@ def build_prompt(description, category=None, style=None, need_white_background=T
         description: 具体描述（必填）
         category: 分类 (character/ui/scene/effect)，可选
         style: 风格 (pixel/cartoon/realistic)，可选，默认使用 ART_STYLE
+        viewpoint: 视角 (front/back/side/top/isometric/perspective/three_quarter)，可选
         need_white_background: 是否需要纯白背景，默认True
 
     Returns:
@@ -134,6 +144,10 @@ def build_prompt(description, category=None, style=None, need_white_background=T
 
     # 添加用户描述
     parts.append(description)
+
+    # 添加视角提示词（放在描述之后，提高重要性）
+    if viewpoint and viewpoint in SYSTEM_PROMPTS:
+        parts.append(SYSTEM_PROMPTS[viewpoint])
 
     # 添加分类系统提示词
     if category and category in SYSTEM_PROMPTS:
@@ -665,7 +679,8 @@ def remove_white_background_grabcut(filepath, name, skip_backgrounds=True, overw
 
                     # 改进：使用更温和的腐蚀（只腐蚀2-5像素）
                     # 根据图像大小动态调整腐蚀核大小
-                    erode_size = max(2, min(5, int(min(width, height) * 0.01)))
+                    # erode_size = max(2, min(5, int(min(width, height) * 0.01)))
+                    erode_size = max(1, min(3, int(min(width, height) * 0.005)))
                     kernel_erode = np.ones((erode_size, erode_size), np.uint8)
                     subject_core = cv2.erode(subject_mask, kernel_erode, iterations=1)
 
@@ -951,6 +966,7 @@ def generate_images(tasks, output_dir="./generated-images"):
 
     for idx, task in enumerate(tasks, 1):
         name = task["name"]
+        viewpoint = task.get("viewpoint")  # 获取视角参数
 
         # 支持两种方式：
         # 1. 直接提供 prompt
@@ -964,6 +980,7 @@ def generate_images(tasks, output_dir="./generated-images"):
                 description=task["description"],
                 category=task.get("category"),
                 style=actual_style,
+                viewpoint=viewpoint,  # 传入视角参数
                 need_white_background=task.get("need_white_background", True)
             )
         else:
@@ -989,7 +1006,14 @@ def generate_images(tasks, output_dir="./generated-images"):
         # 计算最佳 API 尺寸（根据模型自动适配）
         api_size, scale_factor, need_resize = calculate_api_size(target_size, model_name)
 
-        logger.info(f"\n[{idx}/{len(tasks)}] 正在生成: {name}")
+        # 构建文件名（如果有视角，加入文件名）
+        if viewpoint:
+            final_name = f"{name}_{viewpoint}"
+            logger.info(f"\n[{idx}/{len(tasks)}] 正在生成: {name} (视角: {viewpoint})")
+        else:
+            final_name = name
+            logger.info(f"\n[{idx}/{len(tasks)}] 正在生成: {name}")
+
         logger.info(f"使用模型: {model_name}")
         logger.info(f"使用风格: {actual_style}")
         logger.info(f"目标尺寸: {target_size}")
@@ -1018,8 +1042,8 @@ def generate_images(tasks, output_dir="./generated-images"):
             response = requests.get(img_url, timeout=30)
 
             if response.status_code == 200:
-                # 直接使用素材名称，不添加时间戳（目录名已包含时间戳）
-                filename = f"{full_output_dir}/{name}.png"
+                # 使用包含视角信息的文件名
+                filename = f"{full_output_dir}/{final_name}.png"
 
                 with open(filename, "wb") as f:
                     f.write(response.content)
@@ -1076,8 +1100,9 @@ def generate_images(tasks, output_dir="./generated-images"):
 
                 # 记录图像信息（仅用于返回值）
                 images_info.append({
-                    "filename": f"{name}.png",
+                    "filename": f"{final_name}.png",
                     "name": name,
+                    "viewpoint": viewpoint,  # 添加视角信息
                     "prompt": prompt,
                     "style": actual_style,
                     "target_size": target_size,
