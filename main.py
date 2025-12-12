@@ -90,35 +90,34 @@ BACKGROUND_REMOVAL_CONFIG = {
 
 # 系统提示词模板
 SYSTEM_PROMPTS = {
-    # 基础提示词
-    "base": "游戏素材，高质量，清晰，专业制作，PNG格式，避免在图像内部使用纯白色",
+"base": "Game assets, high quality, clear, professionally made, PNG format, avoid using pure white within the image",
 
     # 风格提示词
-    "pixel": "像素风格，8bit/16bit复古游戏风格，清晰的像素边界，游戏素材",
-    "cartoon": "漫画风格，卡通渲染，cel-shading，明快色彩，游戏素材",
-    "realistic": "写实风格，3D渲染，高细节，真实质感，游戏素材",
+    "pixel": "Pixel art style, 8bit/16bit retro game style, clear pixel boundaries, game assets",
+    "cartoon": "Comic book style, cartoon rendering, cel-shading, bright colors, game assets",
+    "realistic": "Realistic style, 3D rendering, high detail, realistic texture, game assets",
 
     # 分类提示词（不含白色背景，白色背景会根据need_white_background动态添加）
-    "char_portrait": "角色立绘，清晰轮廓，立绘设计，适合对话界面使用",
-    "char_sprite": "角色小人，游戏精灵，清晰轮廓，适合游戏场景使用",
-    "ui_asset": "UI组件，界面元素，清晰可辨识，扁平化设计",
-    "effect": "特效元素，视觉效果",
-    "illustration": "插画设计，CG场景，完整构图，丰富细节",
-    "logo": "标志设计，标题文字，清晰可辨识，品牌感，必须使用纯白色背景",
-    "prop": "道具物品，物品设计，清晰轮廓，适合游戏使用",
-    "background": "背景设计，场景底图，层次分明",
+    "char_portrait": "Character portrait, clear outline, portrait design, suitable for dialogue interface use",
+    "char_sprite": "Character sprite, game sprite, clear outline, suitable for game scenes use, full body shot",
+    "ui_asset": "UI components, interface elements, clear and discernible, flat design",
+    "effect": "Effect elements, visual effects",
+    "illustration": "Illustration design, CG scene, complete composition, rich details",
+    "logo": "Logo design, title text, clear and discernible, brand sense, must use a pure white background",
+    "prop": "Prop item, item design, clear outline, suitable for game use",
+    "background": "Background design, scene backdrop, distinct layers",
 
     # 纯白背景提示词（会根据need_white_background动态添加）
-    "white_background": "纯白色背景，纯白底色，plain white background，solid white backdrop",
+    "white_background": "Pure white background, solid white base color, plain white background, solid white backdrop",
 
     # 视角提示词（viewpoint）
-    "front": "正面视角，front view，正面朝向",
-    "back": "背面视角，back view，背面朝向",
-    "side": "侧面视角，side view，侧面朝向",
-    "top": "俯视视角，top-down view，从上往下看",
-    "isometric": "等轴测视角，isometric view，45度角俯视",
-    "perspective": "透视视角，perspective view，三点透视",
-    "three_quarter": "四分之三视角，three-quarter view，斜侧面",
+    "front": "Front view, front view, facing forward",
+    "back": "Back view, back view, facing backward",
+    "side": "Side view, side view, facing sideways",
+    "top": "Top-down view, top-down view, looking from above",
+    "isometric": "Isometric view, isometric view, 45-degree angle top-down view",
+    "perspective": "Perspective view, perspective view, three-point perspective",
+    "three_quarter": "Three-quarter view, three-quarter view, oblique side view"
 }
 
 
@@ -130,7 +129,7 @@ def build_prompt(description, category=None, style=None, viewpoint=None, need_wh
         description: 具体描述（必填）
         category: 分类 (character/ui/scene/effect)，可选
         style: 风格 (pixel/cartoon/realistic)，可选，默认使用 ART_STYLE
-        viewpoint: 视角 (front/back/side/top/isometric/perspective/three_quarter)，可选
+        viewpoint: 视角描述（任意文本），可选，直接加入提示词
         need_white_background: 是否需要纯白背景，默认True
 
     Returns:
@@ -146,8 +145,14 @@ def build_prompt(description, category=None, style=None, viewpoint=None, need_wh
     parts.append(description)
 
     # 添加视角提示词（放在描述之后，提高重要性）
-    if viewpoint and viewpoint in SYSTEM_PROMPTS:
-        parts.append(SYSTEM_PROMPTS[viewpoint])
+    # 如果viewpoint在预定义列表中，使用预定义的提示词；否则直接使用用户输入
+    if viewpoint:
+        if viewpoint in SYSTEM_PROMPTS:
+            # 使用预定义的视角提示词
+            parts.append(SYSTEM_PROMPTS[viewpoint])
+        else:
+            # 直接使用用户输入的视角描述
+            parts.append(viewpoint)
 
     # 添加分类系统提示词
     if category and category in SYSTEM_PROMPTS:
@@ -939,6 +944,139 @@ def remove_background(filepath, name, skip_backgrounds=True, overwrite=True,
         )
 
 
+# ==================== 图像差分提取函数 ====================
+
+def extract_difference(base_image_path, composite_image_path, output_path, name,
+                       sensitivity=30, min_area=100, edge_feather=2):
+    """
+    从两张图像中提取差异部分（新增的内容）
+
+    用于图生图工作流：
+    1. 生成背景图 (base_image)
+    2. 基于背景生成角色 (composite_image)
+    3. 提取角色部分 (difference)
+
+    Args:
+        base_image_path: 基础图像路径（背景）
+        composite_image_path: 合成图像路径（背景+角色）
+        output_path: 输出路径（提取的角色）
+        name: 素材名称
+        sensitivity: 差异检测灵敏度（0-100，越大越敏感）
+        min_area: 最小保留区域面积（像素）
+        edge_feather: 边缘羽化半径（像素）
+
+    Returns:
+        tuple: (是否成功, 提取区域数量)
+    """
+    try:
+        logger.info(f"         差分提取: {name}")
+
+        # 读取图像
+        base_img = cv2.imread(base_image_path)
+        composite_img = cv2.imread(composite_image_path)
+
+        if base_img is None or composite_img is None:
+            logger.error(f"         无法读取图像文件")
+            return False, 0
+
+        # 确保两张图像尺寸相同
+        if base_img.shape != composite_img.shape:
+            logger.warning(f"         图像尺寸不匹配，调整中...")
+            composite_img = cv2.resize(composite_img, (base_img.shape[1], base_img.shape[0]))
+
+        height, width = base_img.shape[:2]
+
+        # ==================== 步骤 1: 计算差异图 ====================
+
+        # 方法1: 绝对差值
+        diff_abs = cv2.absdiff(base_img, composite_img)
+
+        # 转换为灰度图
+        diff_gray = cv2.cvtColor(diff_abs, cv2.COLOR_BGR2GRAY)
+
+        # 应用阈值（根据sensitivity调整）
+        threshold_value = 255 - int(sensitivity * 2.55)
+        _, diff_mask = cv2.threshold(diff_gray, threshold_value, 255, cv2.THRESH_BINARY)
+
+        # 形态学操作：去除噪点
+        kernel = np.ones((3, 3), np.uint8)
+        diff_mask = cv2.morphologyEx(diff_mask, cv2.MORPH_OPEN, kernel, iterations=2)
+        diff_mask = cv2.morphologyEx(diff_mask, cv2.MORPH_CLOSE, kernel, iterations=2)
+
+        # ==================== 步骤 2: 寻找差异区域 ====================
+
+        contours, _ = cv2.findContours(diff_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+        if not contours:
+            logger.warning(f"         未检测到差异区域")
+            return False, 0
+
+        # 过滤小区域
+        valid_contours = [c for c in contours if cv2.contourArea(c) >= min_area]
+
+        if not valid_contours:
+            logger.warning(f"         差异区域太小，已过滤")
+            return False, 0
+
+        logger.info(f"         检测到 {len(valid_contours)} 个差异区域")
+
+        # 创建最终掩码（只保留有效差异区域）
+        final_mask = np.zeros((height, width), dtype=np.uint8)
+        cv2.drawContours(final_mask, valid_contours, -1, 255, thickness=cv2.FILLED)
+
+        # ==================== 步骤 3: 边缘优化 ====================
+
+        if edge_feather > 0:
+            # 边缘羽化（高斯模糊）
+            final_mask = cv2.GaussianBlur(final_mask, (0, 0), sigmaX=edge_feather)
+
+        # ==================== 步骤 4: 提取差异内容 ====================
+
+        # 从合成图中提取差异部分
+        composite_rgb = cv2.cvtColor(composite_img, cv2.COLOR_BGR2RGB)
+
+        # 创建RGBA图像
+        result_rgba = np.dstack((composite_rgb, final_mask))
+
+        # 转换为PIL图像
+        result_img = PILImage.fromarray(result_rgba, 'RGBA')
+
+        # ==================== 步骤 5: 裁剪到最小边界框 ====================
+
+        # 找到非透明像素的边界
+        non_transparent = np.where(final_mask > 0)
+
+        if len(non_transparent[0]) > 0:
+            y_min, y_max = non_transparent[0].min(), non_transparent[0].max()
+            x_min, x_max = non_transparent[1].min(), non_transparent[1].max()
+
+            # 添加边距（避免裁剪太紧）
+            margin = 5
+            y_min = max(0, y_min - margin)
+            y_max = min(height, y_max + margin)
+            x_min = max(0, x_min - margin)
+            x_max = min(width, x_max + margin)
+
+            # 裁剪到边界框
+            result_img = result_img.crop((x_min, y_min, x_max + 1, y_max + 1))
+
+            extracted_size = f"{x_max - x_min + 1}x{y_max - y_min + 1}"
+            logger.info(f"         提取尺寸: {extracted_size}")
+
+        # ==================== 步骤 6: 保存结果 ====================
+
+        result_img.save(output_path, 'PNG')
+        logger.info(f"         差分提取完成: {output_path}")
+
+        return True, len(valid_contours)
+
+    except Exception as e:
+        logger.error(f"         差分提取失败: {e}")
+        import traceback
+        traceback.print_exc()
+        return False, 0
+
+
 # ==================== 主生成函数 ====================
 
 def generate_images(tasks, output_dir="./generated-images"):
@@ -1025,16 +1163,58 @@ def generate_images(tasks, output_dir="./generated-images"):
         logger.info(f"提示词: {prompt[:100]}..." if len(prompt) > 100 else f"提示词: {prompt}")
 
         try:
-            # 调用豆包图像生成 API（使用智能计算的尺寸和指定模型）
-            imagesResponse = client.images.generate(
-                model=model_name,
-                prompt=prompt,
-                size=api_size,  # 使用智能计算的 API 尺寸
-                response_format="url",
-                extra_body={
-                    "watermark": False,  # 设置为 False 移除水印
+            # ==================== 检查是否为图生图模式 ====================
+            reference_image = task.get("reference_image")  # 参考图像路径或名称
+            use_difference_extraction = task.get("extract_difference", False)  # 是否使用差分提取
+
+            # 如果指定了reference_image，构建完整路径
+            reference_image_path = None
+            if reference_image:
+                # 如果是相对路径或仅文件名，在output_dir中查找
+                if not os.path.isabs(reference_image):
+                    reference_image_path = os.path.join(full_output_dir, reference_image)
+                    # 如果没有扩展名，添加.png
+                    if not reference_image_path.endswith(('.png', '.jpg', '.jpeg')):
+                        reference_image_path += '.png'
+                else:
+                    reference_image_path = reference_image
+
+                # 检查文件是否存在
+                if not os.path.exists(reference_image_path):
+                    error_msg = f"参考图像不存在: {reference_image_path}"
+                    logger.error(f"{error_msg}")
+                    errors.append({"name": name, "error": error_msg})
+                    fail_count += 1
+                    continue
+
+                logger.info(f"图生图模式: 参考图像 = {reference_image_path}")
+                if use_difference_extraction:
+                    logger.info(f"将使用差分提取提取新增内容")
+
+            # ==================== 调用豆包图像生成 API ====================
+
+            # 准备API参数
+            api_params = {
+                "model": model_name,
+                "prompt": prompt,
+                "size": api_size,
+                "response_format": "url",
+                "extra_body": {
+                    "watermark": False,
                 },
-            )
+            }
+
+            # 如果有参考图像，添加image参数
+            if reference_image_path:
+                # 读取并编码图像为base64，然后转换为data URL
+                import base64
+                with open(reference_image_path, "rb") as f:
+                    image_data = base64.b64encode(f.read()).decode('utf-8')
+                # 豆包API可能需要data URL格式: data:image/png;base64,<base64_data>
+                data_url = f"data:image/png;base64,{image_data}"
+                api_params["extra_body"]["image"] = data_url
+
+            imagesResponse = client.images.generate(**api_params)
 
             img_url = imagesResponse.data[0].url
 
@@ -1045,15 +1225,47 @@ def generate_images(tasks, output_dir="./generated-images"):
                 # 使用包含视角信息的文件名
                 filename = f"{full_output_dir}/{final_name}.png"
 
-                with open(filename, "wb") as f:
-                    f.write(response.content)
+                # 如果使用差分提取，先保存为临时文件
+                if use_difference_extraction and reference_image_path:
+                    temp_filename = f"{full_output_dir}/{final_name}_composite_temp.png"
+                    with open(temp_filename, "wb") as f:
+                        f.write(response.content)
+                    logger.info(f"临时保存合成图: {temp_filename}")
+
+                    # 执行差分提取
+                    logger.info(f"差分提取中...")
+                    extracted, num_regions = extract_difference(
+                        base_image_path=reference_image_path,
+                        composite_image_path=temp_filename,
+                        output_path=filename,
+                        name=name,
+                        sensitivity=task.get("diff_sensitivity", 30),
+                        min_area=task.get("diff_min_area", 100),
+                        edge_feather=task.get("diff_edge_feather", 2)
+                    )
+
+                    if extracted:
+                        logger.info(f"差分提取成功: 提取了 {num_regions} 个区域")
+                        # 删除临时文件
+                        os.remove(temp_filename)
+                    else:
+                        # 如果差分提取失败，保留合成图
+                        logger.warning(f"差分提取失败，保留合成图")
+                        os.rename(temp_filename, filename)
+
+                else:
+                    # 普通模式，直接保存
+                    with open(filename, "wb") as f:
+                        f.write(response.content)
 
                 logger.info(f"成功保存: {filename}")
 
                 # 自动移除背景
                 background_removed = False
                 pixels_removed = 0
-                if AUTO_REMOVE_BACKGROUND:
+
+                # 如果使用了差分提取，通常不需要再移除背景（已经是透明背景）
+                if AUTO_REMOVE_BACKGROUND and not use_difference_extraction:
                     algorithm = BACKGROUND_REMOVAL_CONFIG.get("algorithm", "grabcut")
                     logger.info(f"移除背景中 (算法: {algorithm})...")
                     background_removed, pixels_removed = remove_background(
@@ -1080,10 +1292,20 @@ def generate_images(tasks, output_dir="./generated-images"):
                         logger.info(f"跳过抠图（背景/插画类素材）")
 
                 # 缩放图像到目标尺寸（保持比例）
+                # 检查是否跳过resize（图生图素材通常已经是正确尺寸）
+                skip_resize = task.get("skip_resize", False)
                 resized = False
                 original_size = None
                 final_size = None
-                if need_resize:
+
+                if skip_resize:
+                    # 图生图素材，跳过resize
+                    logger.info(f"图生图素材，跳过resize步骤")
+                    resized = True
+                    current_img = PILImage.open(filename)
+                    original_size = current_img.size
+                    final_size = current_img.size
+                elif need_resize:
                     logger.info(f"缩放图像: {api_size} → {target_size} (保持比例)...")
                     resized, original_size, final_size = resize_image(filename, target_size, name, keep_aspect_ratio=True)
                     if resized:

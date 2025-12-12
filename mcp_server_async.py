@@ -38,6 +38,7 @@ def generate_game_asset(workspace_dir: str) -> str:
     2. Concurrently generate multiple images (Save to workspace_dir/public/assets/).
     3. Automatically identify and remove the background, exporting transparent PNGs (Background removal is conditional on the category).
     4. Reset tasks.json to an empty template after generation is complete.
+    5. **AUTO Image-to-Image**: First background image is used as reference for all other assets (automatic matching of size and style).
 
     Background Processing Rules:
     - 'background' and 'illustration' categories: Keep the original background (No removal).
@@ -45,6 +46,11 @@ def generate_game_asset(workspace_dir: str) -> str:
 
     Intelligent Size Optimization:
     - Supports arbitrary sizes (e.g., 128x128, 1024x1024, 4096x4096).
+
+    Auto Image-to-Image Workflow:
+    - First task with category='background': Generated normally (reference image).
+    - All subsequent non-background tasks: Automatically use the background as reference + difference extraction + skip resize.
+    - Result: All assets match the background's style and size perfectly!
 
     Args:
         workspace_dir: Path to the working directory of Qwen Code (e.g., "/home/user/phaser-frame-lite").
@@ -55,11 +61,21 @@ def generate_game_asset(workspace_dir: str) -> str:
         "description": "Image description (Required)",
         "category": "char_portrait|char_sprite|ui_asset|effect|illustration|logo|prop|background",
         "style": "pixel|cartoon|realistic",
-        "viewpoint": "front|back|side|top|isometric|perspective|three_quarter (Optional)",
+        "viewpoint": "Viewpoint description (Optional, preset keywords or custom text)",
         "name": "Filename (without extension)",
         "size": "Width x Height (e.g., 1024x512)"
         }
     ]
+
+    Workflow Example:
+    [
+      {"description": "Forest scene", "category": "background", "name": "forest_bg", "size": "1920x1080"},
+      {"description": "Knight character", "category": "char_sprite", "name": "knight", "size": "1920x1080"},
+      {"description": "Treasure chest", "category": "prop", "name": "chest", "size": "1920x1080"}
+    ]
+    → forest_bg.png (1920x1080, full background)
+    → knight.png (auto extracted, transparent background, matching size/style)
+    → chest.png (auto extracted, transparent background, matching size/style)
 
     Category Descriptions:
     - char_portrait: Character portrait (Background removal)
@@ -77,13 +93,9 @@ def generate_game_asset(workspace_dir: str) -> str:
     - realistic: Realistic style (3D rendering, high detail)
 
     Viewpoint Descriptions (Optional):
-    - front: Front view (正面视角)
-    - back: Back view (背面视角)
-    - side: Side view (侧面视角)
-    - top: Top-down view (俯视视角)
-    - isometric: Isometric view (等轴测视角)
-    - perspective: Perspective view (透视视角)
-    - three_quarter: Three-quarter view (四分之三视角)
+    - Preset keywords: front|back|side|top|isometric|perspective|three_quarter (expanded to full prompts)
+    - Custom text: Any viewpoint description (added directly to prompt)
+    - Examples: "front", "low angle shot", "bird's eye view", etc.
 
     Returns:
         str: Batch generation result report, including success/failure count, time statistics, file list, and error details.
@@ -121,8 +133,10 @@ def generate_game_asset(workspace_dir: str) -> str:
         assets_dir = os.path.abspath(assets_dir)
         os.makedirs(assets_dir, exist_ok=True)
 
-        # 3. 转换为 main_async.py 需要的格式
+        # 3. 转换为 main_async.py 需要的格式，并实现自动图生图工作流
         engine_tasks = []
+        background_image_name = None  # 记录背景图的名称
+
         for idx, task_data in enumerate(valid_tasks, 1):
             description = task_data.get("description", "").strip()
             category = task_data.get("category", "none").strip() or "none"
@@ -140,19 +154,49 @@ def generate_game_asset(workspace_dir: str) -> str:
             no_white_background_categories = ["background", "illustration"]
             is_background = category in no_white_background_categories
 
+            # ==================== 自动图生图工作流 ====================
+            # 规则：
+            # 1. 第一个背景图：正常生成，不使用图生图
+            # 2. 后续所有素材：自动引用背景图 + 自动差分提取 + 跳过resize
+
+            reference_image = None
+            extract_difference = False
+            skip_resize = False  # 新增：是否跳过resize
+
+            # 构建实际的文件名（包含viewpoint后缀）
+            actual_filename = f"{name}_{viewpoint}" if viewpoint else name
+
+            if is_background and background_image_name is None:
+                # 这是第一个背景图，记录完整文件名（包含viewpoint）
+                background_image_name = actual_filename
+                logger.info(f"  [{idx}] {actual_filename} - 背景图（基准图像）")
+            elif background_image_name is not None and not is_background:
+                # 非背景图，且已有背景图，自动启用图生图
+                reference_image = background_image_name
+                extract_difference = True
+                skip_resize = True  # 图生图素材跳过resize
+                logger.info(f"  [{idx}] {actual_filename} - 自动图生图模式（基于: {background_image_name}）")
+
             engine_tasks.append({
                 "name": name,
                 "description": description,
                 "category": category,
                 "style": style,
-                "viewpoint": viewpoint,  # 添加视角参数
+                "viewpoint": viewpoint,
+                "reference_image": reference_image,
+                "extract_difference": extract_difference,
+                "skip_resize": skip_resize,  # 传递跳过resize标志
                 "size": size,
                 "need_white_background": not is_background
             })
 
-            # 日志中包含视角信息
+            # 日志中包含视角和图生图信息
             viewpoint_info = f" (视角: {viewpoint})" if viewpoint else ""
-            logger.info(f"  [{idx}] {name} - {category}/{style}{viewpoint_info} - {description[:50]}...")
+            img2img_info = f" [图生图→{reference_image}]" if reference_image else ""
+            diff_info = " [差分提取]" if extract_difference else ""
+            skip_info = " [跳过resize]" if skip_resize else ""
+            logger.info(f"     - {category}/{style}{viewpoint_info}{img2img_info}{diff_info}{skip_info} - {description[:40]}...")
+
 
         # 4. 调用主程序生成图像（并发版本）
         result = engine.generate_images_concurrent(
@@ -162,6 +206,7 @@ def generate_game_asset(workspace_dir: str) -> str:
         )
 
         # 5. 生成完成后，重置 tasks.json 文件为空模板
+        logger.info(f"准备重置任务文件: {tasks_json_path}")
         try:
             template = [
                 {
@@ -173,11 +218,22 @@ def generate_game_asset(workspace_dir: str) -> str:
                     "size": ""
                 }
             ]
+
+            logger.info(f"写入空模板到: {tasks_json_path}")
             with open(tasks_json_path, "w", encoding="utf-8") as f:
                 json.dump(template, f, ensure_ascii=False, indent=2)
-            logger.info(f"已重置任务文件为空模板: {tasks_json_path}")
+
+            logger.info(f"✅ 已成功重置任务文件为空模板")
+
+            # 验证写入
+            with open(tasks_json_path, "r", encoding="utf-8") as f:
+                verify_data = json.load(f)
+                logger.info(f"验证: 任务文件现在包含 {len(verify_data)} 个模板项")
+
         except Exception as clear_error:
-            logger.error(f"重置任务文件失败: {clear_error}")
+            logger.error(f"❌ 重置任务文件失败: {clear_error}")
+            import traceback
+            logger.error(traceback.format_exc())
 
         # 6. 构建详细的返回消息
         message = f"🚀 并发生成完成！\n\n"

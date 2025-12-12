@@ -222,7 +222,7 @@ qwen code 会在项目的 `public/tasks.json` 文件中填写任务，例如：
 | `description` | ✅ 必填  | 无              | 图像的详细描述，如 "一个手持火焰剑的红发女战士" |
 | `category`    | ❌ 可选  | `"none"`      | 素材分类，影响系统提示词和背景颜色              |
 | `style`       | ❌ 可选  | `"cartoon"`   | 美术风格                                        |
-| `viewpoint`   | ❌ 可选  | 无              | 图像视角（如 front/side/top 等）                |
+| `viewpoint`   | ❌ 可选  | 无              | 图像视角（预设关键词或自定义文本）              |
 | `name`        | ❌ 可选  | 自动生成        | 保存的文件名（不含 .png 后缀）                  |
 | `size`        | ❌ 可选  | `"2048x2048"` | 图像尺寸                                        |
 | `is_sheet`    | ❌ 可选  | `false`       | 是否为序列帧动画（true/false）                  |
@@ -268,29 +268,59 @@ qwen code 会在项目的 `public/tasks.json` 文件中填写任务，例如：
 
 ### viewpoint（视角）
 
-**说明：** 控制图像的视角/观察角度（可选参数）
+**说明：** 控制图像的视角/观察角度（可选参数，支持自由文本输入）
 
-**支持的视角：**
+**使用方式：**
+- 🎯 **预设视角**：使用预定义的视角关键词（自动展开为完整提示词）
+- ✍️ **自定义视角**：直接输入任意视角描述文本（直接加入提示词）
+
+**预设视角关键词：**
 
 | 值              | 说明           | 系统提示词                             | 适用场景                        |
 | --------------- | -------------- | -------------------------------------- | ------------------------------- |
-| `front`       | 正面视角       | 正面视角，front view，正面朝向         | 角色正面、UI 图标               |
-| `back`        | 背面视角       | 背面视角，back view，背面朝向          | 角色背面、后视图                |
-| `side`        | 侧面视角       | 侧面视角，side view，侧面朝向          | 角色侧面、横版游戏              |
-| `top`         | 俯视视角       | 俯视视角，top-down view，从上往下看    | 俯视游戏、地图、建筑            |
-| `isometric`   | 等轴测视角     | 等轴测视角，isometric view，45度角俯视 | 模拟经营、策略游戏              |
-| `perspective` | 透视视角       | 透视视角，perspective view，三点透视   | 3D 场景、建筑、环境             |
-| `three_quarter` | 四分之三视角 | 四分之三视角，three-quarter view，斜侧面 | 3D 角色、立体感强的物体         |
+| `front`       | 正面视角       | Front view, front view, facing forward | 角色正面、UI 图标               |
+| `back`        | 背面视角       | Back view, back view, facing backward  | 角色背面、后视图                |
+| `side`        | 侧面视角       | Side view, side view, facing sideways  | 角色侧面、横版游戏              |
+| `top`         | 俯视视角       | Top-down view, top-down view, looking from above | 俯视游戏、地图、建筑 |
+| `isometric`   | 等轴测视角     | Isometric view, isometric view, 45-degree angle top-down view | 模拟经营、策略游戏 |
+| `perspective` | 透视视角       | Perspective view, perspective view, three-point perspective | 3D 场景、建筑、环境 |
+| `three_quarter` | 四分之三视角 | Three-quarter view, three-quarter view, oblique side view | 3D 角色、立体感强的物体 |
+
+**自定义视角示例：**
+
+除了预设关键词，你可以输入任何视角描述：
+
+```json
+{
+  "description": "Dragon character",
+  "viewpoint": "flying from above, bird's eye view, majestic pose"
+}
+```
+
+```json
+{
+  "description": "Warrior",
+  "viewpoint": "low angle, looking up, heroic perspective"
+}
+```
+
+```json
+{
+  "description": "Spaceship",
+  "viewpoint": "dramatic diagonal angle, cinematic composition"
+}
+```
 
 **使用说明：**
 - 如果不指定 `viewpoint`，则不添加视角提示词
+- 使用预设关键词会展开为完整的双语提示词
+- 使用自定义文本会直接加入提示词（建议用英文以获得更好效果）
 - 指定视角后，会自动加入文件名（例如：`warrior_front.png`）
-- 视角提示词会插入到 prompt 中，影响图像生成结果
 
 **示例：**
 ```json
 {
-  "description": "勇者角色，手持盾牌",
+  "description": "Knight character, holding shield",
   "category": "char_portrait",
   "style": "cartoon",
   "viewpoint": "front",
@@ -299,37 +329,6 @@ qwen code 会在项目的 `public/tasks.json` 文件中填写任务，例如：
 }
 ```
 生成的文件名为：`hero_front.png`
-
-**多视角生成示例：**
-```json
-[
-  {
-    "description": "骑士角色",
-    "category": "char_sprite",
-    "style": "pixel",
-    "viewpoint": "front",
-    "name": "knight",
-    "size": "512x512"
-  },
-  {
-    "description": "骑士角色",
-    "category": "char_sprite",
-    "style": "pixel",
-    "viewpoint": "back",
-    "name": "knight",
-    "size": "512x512"
-  },
-  {
-    "description": "骑士角色",
-    "category": "char_sprite",
-    "style": "pixel",
-    "viewpoint": "side",
-    "name": "knight",
-    "size": "512x512"
-  }
-]
-```
-生成的文件：`knight_front.png`、`knight_back.png`、`knight_side.png`
 
 ### is_sheet（序列帧选项）
 
@@ -401,6 +400,177 @@ qwen code 会在项目的 `public/tasks.json` 文件中填写任务，例如：
 - 使用高质量 LANCZOS 重采样算法
 - 放大：保持较好的清晰度
 - 缩小：抗锯齿效果好，无锯齿感
+
+---
+
+## 🎯 自动图生图工作流
+
+### 核心功能
+
+**自动确保素材尺寸配套协调！** 🎨
+
+工具会自动识别第一个背景图，并将其作为参考图像用于生成后续所有素材，确保：
+- ✅ 所有素材风格一致
+- ✅ 所有素材尺寸比例协调
+- ✅ 角色大小与背景匹配
+- ✅ 自动提取透明背景
+
+### 工作流程
+
+```
+步骤1: 串行生成背景图（category="background"）
+  ↓
+  【等待背景图完成】← 确保参考图像存在
+  ↓
+步骤2: 并发生成所有非背景素材：
+  - 使用背景图作为参考（图生图）
+  - 生成"背景+素材"合成图
+  - 智能差分提取素材部分
+  - 自动裁剪，保存为透明PNG
+  - 跳过resize（图生图已是正确尺寸）
+```
+
+**智能调度机制**：
+- 🎯 **两阶段生成**：背景图优先串行生成，确保参考图像存在后，其他素材并发生成
+- ⚡ **性能优化**：非背景素材并发生成，最大化并发效率
+- 🔒 **避免竞态条件**：解决并发时"参考图像不存在"的问题
+
+### 使用示例
+
+**简单示例：生成配套的背景和角色**
+
+```json
+[
+  {
+    "description": "Forest scene background, pixel art style",
+    "category": "background",
+    "style": "pixel",
+    "name": "forest_bg",
+    "size": "1920x1080"
+  },
+  {
+    "description": "Knight character, standing pose",
+    "category": "char_sprite",
+    "style": "pixel",
+    "viewpoint": "front",
+    "name": "knight",
+    "size": "1920x1080"
+  },
+  {
+    "description": "Mage character, casting spell",
+    "category": "char_sprite",
+    "style": "pixel",
+    "viewpoint": "front",
+    "name": "mage",
+    "size": "1920x1080"
+  }
+]
+```
+
+**生成结果：**
+- `forest_bg.png` - 森林背景（1920x1080，完整背景）
+- `knight.png` - 骑士角色（自动裁剪，透明背景，尺寸和风格与背景匹配）
+- `mage.png` - 法师角色（自动裁剪，透明背景，尺寸和风格与背景匹配）
+
+### 批量生成完整游戏素材
+
+```json
+[
+  {
+    "description": "Pixel art castle hall background",
+    "category": "background",
+    "style": "pixel",
+    "name": "castle_bg",
+    "size": "1920x1080"
+  },
+  {
+    "description": "Warrior character",
+    "category": "char_sprite",
+    "style": "pixel",
+    "viewpoint": "front",
+    "name": "warrior"
+  },
+  {
+    "description": "Archer character",
+    "category": "char_sprite",
+    "style": "pixel",
+    "viewpoint": "front",
+    "name": "archer"
+  },
+  {
+    "description": "Treasure chest prop",
+    "category": "prop",
+    "style": "pixel",
+    "name": "chest"
+  },
+  {
+    "description": "Health potion",
+    "category": "prop",
+    "style": "pixel",
+    "name": "potion"
+  },
+  {
+    "description": "Sword weapon",
+    "category": "prop",
+    "style": "pixel",
+    "name": "sword"
+  }
+]
+```
+
+**生成结果：** 6个素材，全部风格统一，尺寸协调！
+
+### 工作原理
+
+1. **自动检测背景图**
+   - 第一个 `category="background"` 的任务被标记为基准图像
+
+2. **自动启用图生图**
+   - 后续所有非背景素材自动引用背景图
+   - API基于背景图生成新素材，确保风格一致
+
+3. **智能差分提取**
+   - 比较"背景"和"背景+素材"两张图
+   - 提取差异部分（新增的素材）
+   - 自动去除背景，保留透明
+
+4. **自动裁剪**
+   - 裁剪到最小边界框
+   - 保留适当边距
+
+5. **跳过Resize**
+   - 图生图素材已是正确尺寸，跳过resize步骤
+
+### 注意事项
+
+1. **第一个任务必须是背景图**
+   - 确保第一个任务的 `category` 是 `"background"`
+
+2. **所有素材使用相同尺寸**
+   - 建议所有任务使用相同的 `size`（如 `"1920x1080"`）
+
+3. **保持风格一致**
+   - 所有任务使用相同的 `style`（如 `"pixel"`）
+
+4. **自动化处理**
+   - 无需手动指定 `reference_image` 或 `extract_difference`
+   - 工具会自动处理
+
+### 高级：差分提取参数
+
+如果需要微调差分提取效果，可以在任务中添加（通常不需要）：
+
+```json
+{
+  "description": "Character",
+  "category": "char_sprite",
+  "diff_sensitivity": 40,      // 差异检测灵敏度（0-100），默认30
+  "diff_min_area": 200,         // 最小保留区域（像素），默认100
+  "diff_edge_feather": 3        // 边缘羽化半径，默认2
+}
+```
+
+---
 
 ## 常见问题
 

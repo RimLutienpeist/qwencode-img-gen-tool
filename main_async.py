@@ -50,6 +50,7 @@ build_prompt = main.build_prompt
 calculate_api_size = main.calculate_api_size
 resize_image = main.resize_image
 remove_background = main.remove_background
+extract_difference = main.extract_difference  # 新增：差分提取函数
 
 
 # ==================== 异步生成单张图像 ====================
@@ -121,22 +122,64 @@ async def generate_single_image_async(
             logger.info(f"  缩放策略: {api_size} → {target_size} ({scale_factor:.2f}x)")
         logger.info(f"  提示词: {prompt[:80]}..." if len(prompt) > 80 else f"  提示词: {prompt}")
 
+        # ==================== 检查是否为图生图模式 ====================
+
+        reference_image = task.get("reference_image")  # 参考图像路径或名称
+        use_difference_extraction = task.get("extract_difference", False)  # 是否使用差分提取
+
+        # 如果指定了reference_image，构建完整路径
+        reference_image_path = None
+        if reference_image:
+            # 如果是相对路径或仅文件名，在output_dir中查找
+            if not os.path.isabs(reference_image):
+                reference_image_path = os.path.join(output_dir, reference_image)
+                # 如果没有扩展名，添加.png
+                if not reference_image_path.endswith(('.png', '.jpg', '.jpeg')):
+                    reference_image_path += '.png'
+            else:
+                reference_image_path = reference_image
+
+            # 检查文件是否存在
+            if not os.path.exists(reference_image_path):
+                return {
+                    "success": False,
+                    "name": name,
+                    "error": f"参考图像不存在: {reference_image_path}"
+                }
+
+            logger.info(f"  图生图模式: 参考图像 = {reference_image_path}")
+            if use_difference_extraction:
+                logger.info(f"  将使用差分提取提取新增内容")
+
         # ==================== 阶段 1: API 调用（异步） ====================
 
         start_time = time.time()
+
+        # 准备API参数
+        api_params = {
+            "model": model_name,
+            "prompt": prompt,
+            "size": api_size,
+            "response_format": "url",
+            "extra_body": {"watermark": False}
+        }
+
+        # 如果有参考图像，添加image参数
+        if reference_image_path:
+            # 读取并编码图像为base64，然后转换为data URL
+            import base64
+            with open(reference_image_path, "rb") as f:
+                image_data = base64.b64encode(f.read()).decode('utf-8')
+            # 豆包API可能需要data URL格式: data:image/png;base64,<base64_data>
+            data_url = f"data:image/png;base64,{image_data}"
+            api_params["extra_body"]["image"] = data_url
 
         # 注意：OpenAI Python SDK 不支持异步，这里使用同步调用
         # 在实际并发中，这部分会被 asyncio.to_thread 包装
         loop = asyncio.get_event_loop()
         imagesResponse = await loop.run_in_executor(
             None,  # 使用默认线程池
-            lambda: client.images.generate(
-                model=model_name,
-                prompt=prompt,
-                size=api_size,
-                response_format="url",
-                extra_body={"watermark": False}
-            )
+            lambda: client.images.generate(**api_params)
         )
 
         img_url = imagesResponse.data[0].url
@@ -162,8 +205,42 @@ async def generate_single_image_async(
         # ==================== 阶段 3: 保存图像 ====================
 
         filename = f"{output_dir}/{final_name}.png"
-        with open(filename, "wb") as f:
-            f.write(image_data)
+
+        # 如果使用差分提取，先保存为临时文件
+        if use_difference_extraction and reference_image_path:
+            temp_filename = f"{output_dir}/{final_name}_composite_temp.png"
+            with open(temp_filename, "wb") as f:
+                f.write(image_data)
+            logger.info(f"  ✓ 临时保存合成图: {temp_filename}")
+
+            # 执行差分提取（在线程池中执行，避免阻塞）
+            logger.info(f"  差分提取中...")
+            extracted, num_regions = await loop.run_in_executor(
+                None,
+                lambda: extract_difference(
+                    base_image_path=reference_image_path,
+                    composite_image_path=temp_filename,
+                    output_path=filename,
+                    name=name,
+                    sensitivity=task.get("diff_sensitivity", 30),
+                    min_area=task.get("diff_min_area", 100),
+                    edge_feather=task.get("diff_edge_feather", 2)
+                )
+            )
+
+            if extracted:
+                logger.info(f"  ✓ 差分提取成功: 提取了 {num_regions} 个区域")
+                # 删除临时文件
+                os.remove(temp_filename)
+            else:
+                # 如果差分提取失败，保留合成图
+                logger.warning(f"  ⚠ 差分提取失败，保留合成图")
+                os.rename(temp_filename, filename)
+
+        else:
+            # 普通模式，直接保存
+            with open(filename, "wb") as f:
+                f.write(image_data)
 
         logger.info(f"  ✓ 保存: {filename}")
 
@@ -172,7 +249,8 @@ async def generate_single_image_async(
         background_removed = False
         pixels_removed = 0
 
-        if AUTO_REMOVE_BACKGROUND:
+        # 如果使用了差分提取，通常不需要再移除背景（已经是透明背景）
+        if AUTO_REMOVE_BACKGROUND and not use_difference_extraction:
             bg_start = time.time()
             algorithm = BACKGROUND_REMOVAL_CONFIG.get("algorithm", "grabcut")
             logger.info(f"  移除背景中 (算法: {algorithm})...")
@@ -207,10 +285,17 @@ async def generate_single_image_async(
 
         # ==================== 阶段 5: 图像缩放（同步，CPU 密集） ====================
 
+        skip_resize = task.get("skip_resize", False)
         original_size = None
         final_size = None
 
-        if need_resize:
+        if skip_resize:
+            # 图生图素材，跳过resize
+            logger.info(f"  • 图生图素材，跳过resize步骤")
+            current_img = PILImage.open(filename)
+            original_size = current_img.size
+            final_size = current_img.size
+        elif need_resize:
             resize_start = time.time()
             logger.info(f"  缩放图像: {api_size} → {target_size}...")
 
@@ -290,22 +375,76 @@ async def generate_images_async(tasks: List[Dict], output_dir: str = "./generate
 
     overall_start = time.time()
 
+    # ==================== 智能任务调度：背景图优先 ====================
+    # 检查是否有图生图任务（reference_image 不为空）
+    has_img2img = any(task.get("reference_image") for task in tasks)
+
+    if has_img2img:
+        logger.info("检测到图生图任务，启用两阶段生成...")
+        logger.info("  阶段1: 串行生成背景图（作为参考图像）")
+        logger.info("  阶段2: 并发生成其他素材（基于背景图）")
+        logger.info("="*80)
+
     # 创建 aiohttp 会话
     timeout = aiohttp.ClientTimeout(total=600)  # 10 分钟超时
     async with aiohttp.ClientSession(timeout=timeout) as session:
-        # 使用信号量控制并发数
-        semaphore = asyncio.Semaphore(max_concurrent)
+        results = []
 
-        async def bounded_generate(task: Dict, idx: int) -> Dict:
-            """带并发控制的生成函数"""
-            async with semaphore:
-                return await generate_single_image_async(session, task, idx, len(tasks), full_output_dir)
+        if has_img2img:
+            # ==================== 阶段 1: 串行生成背景图 ====================
+            background_tasks = []
+            img2img_tasks = []
 
-        # 并发执行所有任务
-        results = await asyncio.gather(
-            *[bounded_generate(task, idx) for idx, task in enumerate(tasks, 1)],
-            return_exceptions=True
-        )
+            for idx, task in enumerate(tasks, 1):
+                if task.get("reference_image"):
+                    # 需要参考图像的任务，放入第二阶段
+                    img2img_tasks.append((task, idx))
+                else:
+                    # 不需要参考图像的任务（通常是背景图），放入第一阶段
+                    background_tasks.append((task, idx))
+
+            # 串行生成背景图（确保参考图像存在）
+            logger.info(f"\n[阶段1] 串行生成 {len(background_tasks)} 个背景图...")
+            for task, idx in background_tasks:
+                result = await generate_single_image_async(session, task, idx, len(tasks), full_output_dir)
+                results.append(result)
+
+            logger.info(f"\n✓ 阶段1完成，背景图已生成")
+            logger.info("="*80)
+
+            # ==================== 阶段 2: 并发生成图生图素材 ====================
+            logger.info(f"\n[阶段2] 并发生成 {len(img2img_tasks)} 个图生图素材...")
+
+            # 使用信号量控制并发数
+            semaphore = asyncio.Semaphore(max_concurrent)
+
+            async def bounded_generate(task: Dict, idx: int) -> Dict:
+                """带并发控制的生成函数"""
+                async with semaphore:
+                    return await generate_single_image_async(session, task, idx, len(tasks), full_output_dir)
+
+            # 并发执行图生图任务
+            img2img_results = await asyncio.gather(
+                *[bounded_generate(task, idx) for task, idx in img2img_tasks],
+                return_exceptions=True
+            )
+            results.extend(img2img_results)
+
+        else:
+            # ==================== 普通模式：全部并发 ====================
+            # 使用信号量控制并发数
+            semaphore = asyncio.Semaphore(max_concurrent)
+
+            async def bounded_generate(task: Dict, idx: int) -> Dict:
+                """带并发控制的生成函数"""
+                async with semaphore:
+                    return await generate_single_image_async(session, task, idx, len(tasks), full_output_dir)
+
+            # 并发执行所有任务
+            results = await asyncio.gather(
+                *[bounded_generate(task, idx) for idx, task in enumerate(tasks, 1)],
+                return_exceptions=True
+            )
 
     # ==================== 统计结果 ====================
 
