@@ -90,35 +90,34 @@ BACKGROUND_REMOVAL_CONFIG = {
 
 # 系统提示词模板
 SYSTEM_PROMPTS = {
-    # 基础提示词
-    "base": "游戏素材，高质量，清晰，专业制作，PNG格式，避免在图像内部使用纯白色",
+"base": "Game assets, high quality, clear, professionally made, PNG format, avoid using pure white within the image",
 
     # 风格提示词
-    "pixel": "像素风格，8bit/16bit复古游戏风格，清晰的像素边界，游戏素材",
-    "cartoon": "漫画风格，卡通渲染，cel-shading，明快色彩，游戏素材",
-    "realistic": "写实风格，3D渲染，高细节，真实质感，游戏素材",
+    "pixel": "Pixel art style, 8bit retro game style, clear pixel boundaries, game assets",
+    "cartoon": "Comic book style, cartoon rendering, cel-shading, bright colors, game assets",
+    "realistic": "Realistic style, 3D rendering, high detail, realistic texture, game assets",
 
     # 分类提示词（不含白色背景，白色背景会根据need_white_background动态添加）
-    "char_portrait": "角色立绘，清晰轮廓，立绘设计，适合对话界面使用",
-    "char_sprite": "角色小人，游戏精灵，清晰轮廓，适合游戏场景使用",
-    "ui_asset": "UI组件，界面元素，清晰可辨识，扁平化设计",
-    "effect": "特效元素，视觉效果",
-    "illustration": "插画设计，CG场景，完整构图，丰富细节",
-    "logo": "标志设计，标题文字，清晰可辨识，品牌感，必须使用纯白色背景",
-    "prop": "道具物品，物品设计，清晰轮廓，适合游戏使用",
-    "background": "背景设计，场景底图，层次分明",
+    "char_portrait": "Character portrait, clear outline, portrait design, suitable for dialogue interface use",
+    "char_sprite": "Character sprite, game sprite, clear outline, suitable for game scenes use, full body shot",
+    "ui_asset": "UI components, interface elements, clear and discernible, flat design",
+    "effect": "Effect elements, visual effects",
+    "illustration": "Illustration design, CG scene, complete composition, rich details",
+    "logo": "Logo design, title text, clear and discernible, brand sense, must use a pure white background",
+    "prop": "Prop item, item design, clear outline, suitable for game use",
+    "background": "Background design, scene backdrop, distinct layers",
 
     # 纯白背景提示词（会根据need_white_background动态添加）
-    "white_background": "纯白色背景，纯白底色，plain white background，solid white backdrop",
+    "white_background": "Pure white background, solid white base color, plain white background, solid white backdrop",
 
     # 视角提示词（viewpoint）
-    "front": "正面视角，front view，正面朝向",
-    "back": "背面视角，back view，背面朝向",
-    "side": "侧面视角，side view，侧面朝向",
-    "top": "俯视视角，top-down view，从上往下看",
-    "isometric": "等轴测视角，isometric view，45度角俯视",
-    "perspective": "透视视角，perspective view，三点透视",
-    "three_quarter": "四分之三视角，three-quarter view，斜侧面",
+    "front": "Front view, front view, facing forward",
+    "back": "Back view, back view, facing backward",
+    "side": "Side view, side view, facing sideways",
+    "top": "Top-down view, top-down view, looking from above",
+    "isometric": "Isometric view, isometric view, 45-degree angle top-down view",
+    "perspective": "Perspective view, perspective view, three-point perspective",
+    "three_quarter": "Three-quarter view, three-quarter view, oblique side view"
 }
 
 

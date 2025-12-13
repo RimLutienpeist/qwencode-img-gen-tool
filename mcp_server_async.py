@@ -33,6 +33,8 @@ def generate_game_asset(workspace_dir: str) -> str:
     """
     Reads the task list from tasks.json and concurrently batch-generates game asset images, with intelligent background removal.
 
+    ⚠️ IMPORTANT LIMITATION: This tool generates ONLY single static images. It CANNOT generate sprite sheets, animation frames, or frame sequences.
+
     Core Functions:
     1. Read the task list from the workspace_dir/public/tasks.json file.
     2. Concurrently generate multiple images (Save to workspace_dir/public/assets/).
@@ -46,6 +48,11 @@ def generate_game_asset(workspace_dir: str) -> str:
     Intelligent Size Optimization:
     - Supports arbitrary sizes (e.g., 128x128, 1024x1024, 4096x4096).
 
+    ⚠️ Animation Limitation:
+    - Each task generates ONE single static image only
+    - Cannot generate walking cycles, attack sequences, or any multi-frame animations
+    - For character movement, design single-pose sprites and use Phaser's programmatic animations (rotation, scale, position)
+
     Args:
         workspace_dir: Path to the working directory of Qwen Code (e.g., "/home/user/phaser-frame-lite").
 
@@ -55,7 +62,7 @@ def generate_game_asset(workspace_dir: str) -> str:
         "description": "Image description (Required)",
         "category": "char_portrait|char_sprite|ui_asset|effect|illustration|logo|prop|background",
         "style": "pixel|cartoon|realistic",
-        "viewpoint": "front|back|side|top|isometric|perspective|three_quarter (Optional)",
+        "viewpoint": "e.g. front|back|side|top|isometric|perspective",
         "name": "Filename (without extension)",
         "size": "Width x Height (e.g., 1024x512)"
         }
